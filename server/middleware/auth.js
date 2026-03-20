@@ -1,14 +1,13 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
-const JWT_SECRET = process.env.JWT_SECRET;
-
-if (!JWT_SECRET) {
-  throw new Error('Missing JWT_SECRET environment variable');
-}
-
 module.exports = async function authMiddleware(req, res, next) {
   try {
+    const jwtSecret = process.env.JWT_SECRET;
+    if (!jwtSecret) {
+      return res.status(500).json({ error: '服务端缺少 JWT_SECRET 配置' });
+    }
+
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
@@ -16,7 +15,7 @@ module.exports = async function authMiddleware(req, res, next) {
       return res.status(401).json({ error: '未授权访问，请先登录' });
     }
 
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, jwtSecret);
     const user = await User.findById(payload.userId).select('-passwordHash');
 
     if (!user) {

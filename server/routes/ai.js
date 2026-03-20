@@ -2,19 +2,22 @@ const express = require('express');
 const https = require('https');
 const Task = require('../models/Task');
 
-// Coze API 配置
-const COZE_BOT_ID = process.env.COZE_BOT_ID;
-const COZE_ACCESS_TOKEN = process.env.COZE_ACCESS_TOKEN;
+function isAiConfigured() {
+  return Boolean(process.env.COZE_BOT_ID && process.env.COZE_ACCESS_TOKEN);
+}
 
 // 调用 Coze AI 分析任务
 async function callCozeAI(prompt) {
-  if (!COZE_BOT_ID || !COZE_ACCESS_TOKEN) {
+  const cozeBotId = process.env.COZE_BOT_ID;
+  const cozeAccessToken = process.env.COZE_ACCESS_TOKEN;
+
+  if (!cozeBotId || !cozeAccessToken) {
     throw new Error('Missing COZE_BOT_ID or COZE_ACCESS_TOKEN environment variable');
   }
 
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
-      bot_id: COZE_BOT_ID,
+      bot_id: cozeBotId,
       user_id: `user_${Date.now()}`,
       additional_messages: [{
         role: 'user',
@@ -30,7 +33,7 @@ async function callCozeAI(prompt) {
       path: '/v3/chat',
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${COZE_ACCESS_TOKEN}`,
+        'Authorization': `Bearer ${cozeAccessToken}`,
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload)
       }
@@ -64,6 +67,10 @@ const router = express.Router();
 // AI 分析单个任务
 router.post('/analyze-task/:taskId', async (req, res) => {
   try {
+    if (!isAiConfigured()) {
+      return res.status(503).json({ error: 'AI 功能未启用' });
+    }
+
     const task = await Task.findById(req.params.taskId)
       .populate('employeeId', 'name')
       .populate('projectId', 'name');
@@ -99,6 +106,10 @@ router.post('/analyze-task/:taskId', async (req, res) => {
 // AI 批量分析今日任务并生成提醒
 router.post('/analyze-today', async (req, res) => {
   try {
+    if (!isAiConfigured()) {
+      return res.status(503).json({ error: 'AI 功能未启用' });
+    }
+
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);

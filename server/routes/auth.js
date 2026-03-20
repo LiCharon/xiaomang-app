@@ -5,21 +5,25 @@ const User = require('../models/User');
 const InviteCode = require('../models/InviteCode');
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET;
 const TOKEN_EXPIRES_IN = '7d';
 const LEGACY_MANAGER_INVITE_CODE = String(process.env.MANAGER_INVITE_CODE || '').trim();
 
-if (!JWT_SECRET) {
-  throw new Error('Missing JWT_SECRET environment variable');
+function getJwtSecretOrSendError(res) {
+  const jwtSecret = process.env.JWT_SECRET;
+  if (!jwtSecret) {
+    res.status(500).json({ error: '服务端缺少 JWT_SECRET 配置' });
+    return null;
+  }
+  return jwtSecret;
 }
 
-function signToken(user) {
+function signToken(user, jwtSecret) {
   return jwt.sign(
     {
       userId: user._id.toString(),
       email: user.email
     },
-    JWT_SECRET,
+    jwtSecret,
     { expiresIn: TOKEN_EXPIRES_IN }
   );
 }
@@ -83,6 +87,9 @@ async function verifyAndConsumeInviteCode(rawInviteCode) {
 
 router.post('/register', async (req, res) => {
   try {
+    const jwtSecret = getJwtSecretOrSendError(res);
+    if (!jwtSecret) return;
+
     const { name, email, password, inviteCode } = req.body;
 
     if (!name || !email || !password || !inviteCode) {
@@ -111,7 +118,7 @@ router.post('/register', async (req, res) => {
       passwordHash
     });
 
-    const token = signToken(user);
+    const token = signToken(user, jwtSecret);
     return res.status(201).json({
       message: '注册成功',
       token,
@@ -124,6 +131,9 @@ router.post('/register', async (req, res) => {
 
 router.post('/login', async (req, res) => {
   try {
+    const jwtSecret = getJwtSecretOrSendError(res);
+    if (!jwtSecret) return;
+
     const { email, password } = req.body;
     if (!email || !password) {
       return res.status(400).json({ error: '请输入邮箱和密码' });
@@ -139,7 +149,7 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: '邮箱或密码错误' });
     }
 
-    const token = signToken(user);
+    const token = signToken(user, jwtSecret);
     res.json({
       message: '登录成功',
       token,
@@ -152,6 +162,9 @@ router.post('/login', async (req, res) => {
 
 router.get('/me', async (req, res) => {
   try {
+    const jwtSecret = getJwtSecretOrSendError(res);
+    if (!jwtSecret) return;
+
     const authHeader = req.headers.authorization || '';
     const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : '';
 
@@ -159,7 +172,7 @@ router.get('/me', async (req, res) => {
       return res.status(401).json({ error: '未登录' });
     }
 
-    const payload = jwt.verify(token, JWT_SECRET);
+    const payload = jwt.verify(token, jwtSecret);
     const user = await User.findById(payload.userId);
     if (!user) {
       return res.status(401).json({ error: '用户不存在' });

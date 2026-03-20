@@ -1,6 +1,7 @@
+const path = require('path');
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const mongoose = require('mongoose');
 const { connectToDatabase } = require('./lib/db');

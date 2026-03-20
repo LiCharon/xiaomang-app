@@ -1,13 +1,24 @@
 {
   "name": "ai-project-assistant",
   "version": "1.0.0",
+  "private": true,
   "description": "AI Project Assistant - 智能项目任务管理与桌宠提醒",
+  "workspaces": [
+    "client",
+    "server"
+  ],
   "scripts": {
-    "client": "cd client && npm run dev",
-    "client:build": "cd client && npm run build",
-    "server": "cd server && node index.js",
-    "dev": "concurrently \"npm run server\" \"npm run client\"",
-    "install-all": "npm install && cd client && npm install && cd ../server && npm install"
+    "build": "npm run build --workspace client",
+    "start": "npm run start --workspace server",
+    "client": "npm run dev --workspace client",
+    "client:build": "npm run build --workspace client",
+    "server": "npm run start --workspace server",
+    "server:dev": "npm run dev --workspace server",
+    "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
+    "install-all": "npm install"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
   },
   "keywords": ["ai", "project-management", "pet", "reminder"],
   "author": "",

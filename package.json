@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "description": "AI Project Assistant - 智能项目任务管理与桌宠提醒",
   "scripts": {
-    "client": "cd client && npm start",
+    "client": "cd client && npm run dev",
+    "client:build": "cd client && npm run build",
     "server": "cd server && node index.js",
     "dev": "concurrently \"npm run server\" \"npm run client\"",
     "install-all": "npm install && cd client && npm install && cd ../server && npm install"

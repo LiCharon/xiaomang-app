@@ -1,0 +1,23 @@
+version: '3.9'
+
+services:
+  server:
+    build:
+      context: ./server
+    container_name: ai-project-assistant-server
+    environment:
+      - PORT=5001
+      - MONGO_URI=${MONGO_URI}
+      - JWT_SECRET=${JWT_SECRET:-***REMOVED-JWT-SECRET***}
+      - MANAGER_EMAILS=${MANAGER_EMAILS:-}
+    ports:
+      - "5001:5001"
+
+  client:
+    build:
+      context: ./client
+    container_name: ai-project-assistant-client
+    ports:
+      - "3000:80"
+    depends_on:
+      - server

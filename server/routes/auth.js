@@ -5,9 +5,13 @@ const User = require('../models/User');
 const InviteCode = require('../models/InviteCode');
 
 const router = express.Router();
-const JWT_SECRET = process.env.JWT_SECRET || '***REMOVED-JWT-SECRET***';
+const JWT_SECRET = process.env.JWT_SECRET;
 const TOKEN_EXPIRES_IN = '7d';
 const LEGACY_MANAGER_INVITE_CODE = String(process.env.MANAGER_INVITE_CODE || '').trim();
+
+if (!JWT_SECRET) {
+  throw new Error('Missing JWT_SECRET environment variable');
+}
 
 function signToken(user) {
   return jwt.sign(

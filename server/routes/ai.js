@@ -3,11 +3,15 @@ const https = require('https');
 const Task = require('../models/Task');
 
 // Coze API 配置
-const COZE_BOT_ID = process.env.COZE_BOT_ID || '7615157976437112858';
-const COZE_ACCESS_TOKEN = process.env.COZE_ACCESS_TOKEN || 'pat_xvkEG1rPLvP8wfnX4zlNRDdhRfEN8sXBeDnKpHJez7dHowiskl0JxmrmXBbAUSeY';
+const COZE_BOT_ID = process.env.COZE_BOT_ID;
+const COZE_ACCESS_TOKEN = process.env.COZE_ACCESS_TOKEN;
 
 // 调用 Coze AI 分析任务
 async function callCozeAI(prompt) {
+  if (!COZE_BOT_ID || !COZE_ACCESS_TOKEN) {
+    throw new Error('Missing COZE_BOT_ID or COZE_ACCESS_TOKEN environment variable');
+  }
+
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify({
       bot_id: COZE_BOT_ID,
@@ -29,8 +33,7 @@ async function callCozeAI(prompt) {
         'Authorization': `Bearer ${COZE_ACCESS_TOKEN}`,
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(payload)
-      },
-      rejectUnauthorized: false
+      }
     };
 
     const req = https.request(options, (res) => {

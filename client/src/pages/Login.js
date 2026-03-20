@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 import { authAPI } from '../services/api';
 
 function Login({ onAuthSuccess }) {
@@ -48,7 +48,7 @@ function Login({ onAuthSuccess }) {
 
         <div className="auth-card">
           <div className="auth-heading">登录</div>
-          <div className="auth-subheading">使用你的账号进入工作台</div>
+          <div className="auth-subheading">使用经理账号进入工作台</div>
 
           {error && <div className="error-message">{error}</div>}
 
@@ -88,7 +88,7 @@ function Login({ onAuthSuccess }) {
           </form>
 
           <div className="auth-footer-note">
-            还没有账号？<Link to="/register" className="auth-link">立即注册</Link>
+            仅经理端可新增员工账号，员工端不提供注册入口
           </div>
         </div>
       </div>

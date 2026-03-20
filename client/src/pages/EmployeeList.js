@@ -7,22 +7,12 @@ function getAvatarClass(name) {
   return AVATAR_CLASSES[name.charCodeAt(0) % AVATAR_CLASSES.length];
 }
 
-const DEPT_COLORS = {
-  '技术部': '#6366f1',
-  '产品部': '#f59e0b',
-  '设计部': '#ec4899',
-  '运营部': '#14b8a6',
-};
-function deptColor(dept) {
-  return DEPT_COLORS[dept] || '#94a3b8';
-}
-
 function EmployeeList() {
   const [employees, setEmployees] = useState([]);
   const [loading, setLoading] = useState(true);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editingId, setEditingId] = useState(null);
-  const [formData, setFormData] = useState({ name: '', email: '', department: '' });
+  const [formData, setFormData] = useState({ name: '', account: '', password: '', status: 'active' });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => { fetchEmployees(); }, []);
@@ -41,10 +31,15 @@ function EmployeeList() {
 
   const openDrawer = (emp = null) => {
     if (emp) {
-      setFormData({ name: emp.name, email: emp.email, department: emp.department || '' });
+      setFormData({
+        name: emp.name || '',
+        account: emp.account || '',
+        password: emp.password || '',
+        status: emp.status || 'active'
+      });
       setEditingId(emp._id);
     } else {
-      setFormData({ name: '', email: '', department: '' });
+      setFormData({ name: '', account: '', password: '', status: 'active' });
       setEditingId(null);
     }
     setDrawerOpen(true);
@@ -53,7 +48,7 @@ function EmployeeList() {
   const closeDrawer = () => {
     setDrawerOpen(false);
     setEditingId(null);
-    setFormData({ name: '', email: '', department: '' });
+    setFormData({ name: '', account: '', password: '', status: 'active' });
   };
 
   const handleChange = (e) => {
@@ -73,7 +68,7 @@ function EmployeeList() {
       fetchEmployees();
     } catch (error) {
       console.error('保存员工失败:', error);
-      alert('保存失败，请重试');
+      alert(error?.response?.data?.error || '保存失败，请重试');
     } finally {
       setSaving(false);
     }
@@ -89,34 +84,14 @@ function EmployeeList() {
     }
   };
 
-  const handleBatchAdd = async () => {
-    const sampleEmployees = [
-      { name: '张三', email: 'zhangsan@example.com', department: '技术部' },
-      { name: '李四', email: 'lisi@example.com', department: '产品部' },
-      { name: '王五', email: 'wangwu@example.com', department: '设计部' },
-      { name: '赵六', email: 'zhaoliu@example.com', department: '运营部' }
-    ];
-    try {
-      for (const emp of sampleEmployees) {
-        await employeeAPI.create(emp);
-      }
-      fetchEmployees();
-    } catch (error) {
-      console.error('批量添加失败:', error);
-    }
-  };
-
   return (
     <div>
       <div className="page-header">
         <div>
-          <h1 className="page-title">员工管理</h1>
-          <div className="page-subtitle">管理团队成员信息</div>
+          <h1 className="page-title">员工管理（经理入口）</h1>
+          <div className="page-subtitle">在 employees 集合维护员工账号：name / account / password / status</div>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button className="btn btn-secondary" onClick={handleBatchAdd}>
-            📥 添加测试员工
-          </button>
           <button className="btn btn-primary" onClick={() => openDrawer()}>
             ＋ 添加员工
           </button>
@@ -140,8 +115,8 @@ function EmployeeList() {
               <thead>
                 <tr>
                   <th>员工</th>
-                  <th>邮箱</th>
-                  <th>部门</th>
+                  <th>账号</th>
+                  <th>状态</th>
                   <th>加入时间</th>
                   <th>操作</th>
                 </tr>
@@ -157,37 +132,29 @@ function EmployeeList() {
                         <span className="table-cell-primary">{emp.name}</span>
                       </div>
                     </td>
-                    <td style={{ color: '#64748b', fontSize: '0.85rem' }}>{emp.email}</td>
+                    <td style={{ color: '#64748b', fontSize: '0.85rem' }}>{emp.account || '—'}</td>
                     <td>
-                      {emp.department ? (
-                        <span style={{
-                          display: 'inline-block',
-                          padding: '0.2rem 0.6rem',
-                          borderRadius: 20,
-                          fontSize: '0.75rem',
-                          fontWeight: 500,
-                          background: deptColor(emp.department) + '18',
-                          color: deptColor(emp.department),
-                        }}>
-                          {emp.department}
-                        </span>
-                      ) : <span style={{ color: '#94a3b8' }}>—</span>}
+                      <span style={{
+                        display: 'inline-block',
+                        padding: '0.2rem 0.6rem',
+                        borderRadius: 20,
+                        fontSize: '0.75rem',
+                        fontWeight: 500,
+                        background: emp.status === 'active' ? '#10b98118' : '#ef444418',
+                        color: emp.status === 'active' ? '#059669' : '#dc2626',
+                      }}>
+                        {emp.status === 'active' ? 'active' : 'disabled'}
+                      </span>
                     </td>
                     <td style={{ fontSize: '0.85rem', color: '#94a3b8' }}>
                       {emp.createdAt ? new Date(emp.createdAt).toLocaleDateString('zh-CN') : '—'}
                     </td>
                     <td>
                       <div style={{ display: 'flex', gap: '0.4rem' }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => openDrawer(emp)}
-                        >
+                        <button className="btn btn-secondary btn-sm" onClick={() => openDrawer(emp)}>
                           编辑
                         </button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDelete(emp._id)}
-                        >
+                        <button className="btn btn-danger btn-sm" onClick={() => handleDelete(emp._id)}>
                           删除
                         </button>
                       </div>
@@ -200,13 +167,12 @@ function EmployeeList() {
         )}
       </div>
 
-      {/* Drawer */}
       {drawerOpen && (
         <>
           <div className="drawer-overlay" onClick={closeDrawer} />
           <div className="drawer">
             <div className="drawer-header">
-              <div className="drawer-title">{editingId ? '编辑员工' : '添加员工'}</div>
+              <div className="drawer-title">{editingId ? '编辑员工账号' : '添加员工账号'}</div>
               <button className="drawer-close" onClick={closeDrawer}>✕</button>
             </div>
             <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', flex: 1 }}>
@@ -225,35 +191,40 @@ function EmployeeList() {
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label form-label-required">邮箱</label>
+                  <label className="form-label form-label-required">账号（account）</label>
                   <input
-                    type="email"
-                    name="email"
+                    type="text"
+                    name="account"
                     className="form-input"
-                    value={formData.email}
+                    value={formData.account}
                     onChange={handleChange}
-                    placeholder="请输入邮箱"
+                    placeholder="请输入员工登录账号"
                     required
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">部门</label>
+                  <label className="form-label form-label-required">密码</label>
                   <input
                     type="text"
-                    name="department"
+                    name="password"
                     className="form-input"
-                    value={formData.department}
+                    value={formData.password}
                     onChange={handleChange}
-                    placeholder="如：技术部、产品部"
-                    list="dept-suggestions"
+                    placeholder="请输入密码"
+                    required
                   />
-                  <datalist id="dept-suggestions">
-                    <option value="技术部" />
-                    <option value="产品部" />
-                    <option value="设计部" />
-                    <option value="运营部" />
-                    <option value="市场部" />
-                  </datalist>
+                </div>
+                <div className="form-group">
+                  <label className="form-label">状态</label>
+                  <select
+                    name="status"
+                    className="form-select"
+                    value={formData.status}
+                    onChange={handleChange}
+                  >
+                    <option value="active">active</option>
+                    <option value="disabled">disabled</option>
+                  </select>
                 </div>
               </div>
               <div className="drawer-footer">

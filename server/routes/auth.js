@@ -27,40 +27,8 @@ function sanitizeUser(user) {
   };
 }
 
-router.post('/register', async (req, res) => {
-  try {
-    const { name, email, password } = req.body;
-
-    if (!name || !email || !password) {
-      return res.status(400).json({ error: '姓名、邮箱和密码均为必填项' });
-    }
-
-    if (password.length < 6) {
-      return res.status(400).json({ error: '密码长度不能少于 6 位' });
-    }
-
-    const normalizedEmail = email.trim().toLowerCase();
-    const existingUser = await User.findOne({ email: normalizedEmail });
-    if (existingUser) {
-      return res.status(409).json({ error: '该邮箱已注册' });
-    }
-
-    const passwordHash = await bcrypt.hash(password, 10);
-    const user = await User.create({
-      name: name.trim(),
-      email: normalizedEmail,
-      passwordHash
-    });
-
-    const token = signToken(user);
-    res.status(201).json({
-      message: '注册成功',
-      token,
-      user: sanitizeUser(user)
-    });
-  } catch (err) {
-    res.status(400).json({ error: err.message });
-  }
+router.post('/register', async (_req, res) => {
+  return res.status(403).json({ error: '已关闭公开注册，请由经理在员工管理中创建员工账号' });
 });
 
 router.post('/login', async (req, res) => {

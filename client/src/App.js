@@ -12,7 +12,6 @@ import TaskList from './pages/TaskList';
 import TaskForm from './pages/TaskForm';
 import EmployeeList from './pages/EmployeeList';
 import Login from './pages/Login';
-import Register from './pages/Register';
 import ProtectedRoute from './components/ProtectedRoute';
 import { authAPI, clearStoredToken, getStoredToken, storeToken } from './services/api';
 import './App.css';
@@ -26,7 +25,7 @@ const NAV_ITEMS = [
 const PAGE_TITLES = {
   '/': { title: '任务总览', sub: '集中查看和推进所有任务事项' },
   '/tasks/new': { title: '创建任务', sub: '为团队新增一项清晰可执行的任务' },
-  '/employees': { title: '团队成员', sub: '管理协作成员与组织信息' }
+  '/employees': { title: '团队成员', sub: '经理入口：管理员工账号信息' }
 };
 
 function AppLoadingScreen() {
@@ -161,14 +160,6 @@ function App() {
           element={(
             <PublicOnlyRoute currentUser={currentUser} authLoading={authLoading}>
               <Login onAuthSuccess={handleAuthSuccess} />
-            </PublicOnlyRoute>
-          )}
-        />
-        <Route
-          path="/register"
-          element={(
-            <PublicOnlyRoute currentUser={currentUser} authLoading={authLoading}>
-              <Register onAuthSuccess={handleAuthSuccess} />
             </PublicOnlyRoute>
           )}
         />

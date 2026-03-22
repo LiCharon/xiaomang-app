@@ -1,22 +1,27 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { taskAPI, employeeAPI } from '../services/api';
+import { taskAPI, employeeAPI, customerAPI } from '../services/api';
 
 function TaskForm() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
   const [employees, setEmployees] = useState([]);
+  const [customers, setCustomers] = useState([]);
   const [errors, setErrors] = useState({});
 
   const [formData, setFormData] = useState({
+    customerId: '',
     customerName: '',
+    customerOccupation: '',
     contact: '',
+    ipPositioning: '',
+    contentDirection: '',
+    benchmarkAccounts: '',
     ownerId: '',
     platformName: '',
     collaborationStart: '',
     collaborationEnd: '',
     notes: '',
-    contentRequirements: ['', '', ''],
     priority: 'medium',
     status: 'pending'
   });
@@ -27,33 +32,63 @@ function TaskForm() {
 
   const fetchOptions = async () => {
     try {
-      const empRes = await employeeAPI.getAll();
+      const [empRes, customerRes] = await Promise.all([
+        employeeAPI.getAll(),
+        customerAPI.getAll()
+      ]);
       setEmployees(empRes.data);
+      setCustomers(customerRes.data);
     } catch (error) {
       console.error('获取选项失败:', error);
     }
   };
 
+  const applyCustomerToForm = (customer) => {
+    if (!customer) return;
+    setFormData((prev) => ({
+      ...prev,
+      customerId: customer._id,
+      customerName: customer.name || '',
+      customerOccupation: customer.occupation || '',
+      contact: customer.contact || '',
+      ipPositioning: customer.ipPositioning || '',
+      contentDirection: customer.contentNeeds || '',
+      benchmarkAccounts: customer.benchmarkAccounts || '',
+      notes: customer.notes || ''
+    }));
+  };
+
   const handleChange = (e) => {
     const { name, value } = e.target;
 
-    if (name.startsWith('contentRequirements[')) {
-      const index = Number(name.match(/\[(\d+)\]/)?.[1]);
-      if (!Number.isNaN(index)) {
-        const nextRequirements = [...formData.contentRequirements];
-        nextRequirements[index] = value;
-        setFormData({ ...formData, contentRequirements: nextRequirements });
+    if (name === 'customerId') {
+      if (!value) {
+        setFormData((prev) => ({
+          ...prev,
+          customerId: '',
+          customerName: '',
+          customerOccupation: '',
+          contact: '',
+          ipPositioning: '',
+          contentDirection: '',
+          benchmarkAccounts: '',
+          notes: ''
+        }));
         return;
       }
+
+      const selected = customers.find((item) => item._id === value);
+      applyCustomerToForm(selected);
+      return;
     }
 
-    setFormData({ ...formData, [name]: value });
-    if (errors[name]) setErrors({ ...errors, [name]: '' });
+    setFormData((prev) => ({ ...prev, [name]: value }));
+    if (errors[name]) setErrors((prev) => ({ ...prev, [name]: '' }));
   };
 
   const validate = () => {
     const newErrors = {};
-    if (!formData.customerName.trim()) newErrors.customerName = '请输入客户名称';
+    if (!formData.customerName.trim()) newErrors.customerName = '请选择客户或填写客户名称';
     if (!formData.ownerId) newErrors.ownerId = '请选择负责人';
     if (!formData.platformName) newErrors.platformName = '请选择目标平台';
     if (!formData.collaborationStart || !formData.collaborationEnd) {
@@ -69,6 +104,7 @@ function TaskForm() {
       setErrors(newErrors);
       return;
     }
+
     try {
       setLoading(true);
       const payload = {
@@ -88,72 +124,12 @@ function TaskForm() {
     }
   };
 
-  const handleBatchImport = async () => {
-    const today = new Date();
-    const sampleTasks = [
-      {
-        customerName: '上海睿启科技',
-        contact: 'marketing@rqtech.cn',
-        ownerId: employees[0]?._id,
-        platformName: '抖音',
-        collaborationPeriod: {
-          start: today.toISOString().split('T')[0],
-          end: new Date(today.getTime() + 7 * 86400000).toISOString().split('T')[0]
-        },
-        notes: '重点推广新品发布期内容',
-        contentRequirements: ['短视频 12 条', '品牌号直播 2 场', '达人联动脚本'],
-        priority: 'high',
-        status: 'pending'
-      },
-      {
-        customerName: '成都星河文化',
-        contact: '138****2210',
-        ownerId: employees[1]?._id || employees[0]?._id,
-        platformName: '小红书',
-        collaborationPeriod: {
-          start: today.toISOString().split('T')[0],
-          end: new Date(today.getTime() + 14 * 86400000).toISOString().split('T')[0]
-        },
-        notes: '客户要求周报机制',
-        contentRequirements: ['栏目策划 1 套', '拍摄方案 2 份', '剪辑样片 3 版'],
-        priority: 'medium',
-        status: 'pending'
-      },
-      {
-        customerName: '杭州墨羽工作室',
-        contact: 'moyu@studio.com',
-        ownerId: employees[2]?._id || employees[0]?._id,
-        platformName: 'TikTok',
-        collaborationPeriod: {
-          start: new Date(today.getTime() + 2 * 86400000).toISOString().split('T')[0],
-          end: new Date(today.getTime() + 10 * 86400000).toISOString().split('T')[0]
-        },
-        notes: '需支持多平台同步发布',
-        contentRequirements: ['长图文 5 篇', '选题会议 2 次', '运营方案 1 份'],
-        priority: 'low',
-        status: 'pending'
-      }
-    ];
-    try {
-      setLoading(true);
-      await taskAPI.createBatch(sampleTasks);
-      navigate('/');
-    } catch (error) {
-      console.error('批量导入失败:', error);
-      setErrors({ _general: '批量导入失败，请重试' });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const canBatchImport = employees.length > 0;
-
   return (
     <div>
       <div className="page-header">
         <div>
           <h1 className="page-title">新建任务</h1>
-          <div className="page-subtitle">根据客户需求快速创建执行任务</div>
+          <div className="page-subtitle">选择客户后自动带入联系方式、备注、内容需求和对标账号</div>
         </div>
       </div>
 
@@ -170,6 +146,23 @@ function TaskForm() {
 
             <div className="task-form-card-body">
               <div className="form-group">
+                <label className="form-label">选择客户档案</label>
+                <select
+                  name="customerId"
+                  className="form-select"
+                  value={formData.customerId}
+                  onChange={handleChange}
+                >
+                  <option value="">请选择客户（可先在客户模块创建）</option>
+                  {customers.map((customer) => (
+                    <option key={customer._id} value={customer._id}>
+                      {customer.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="form-group">
                 <label className="form-label form-label-required">客户名称</label>
                 <input
                   type="text"
@@ -183,6 +176,18 @@ function TaskForm() {
               </div>
 
               <div className="form-group">
+                <label className="form-label">职业</label>
+                <input
+                  type="text"
+                  name="customerOccupation"
+                  className="form-input"
+                  value={formData.customerOccupation}
+                  onChange={handleChange}
+                  placeholder="客户职业"
+                />
+              </div>
+
+              <div className="form-group">
                 <label className="form-label form-label-required">负责人</label>
                 <select
                   name="ownerId"
@@ -191,7 +196,7 @@ function TaskForm() {
                   onChange={handleChange}
                 >
                   <option value="">请选择负责人</option>
-                  {employees.map(emp => (
+                  {employees.map((emp) => (
                     <option key={emp._id} value={emp._id}>
                       {emp.name}{emp.department ? ` · ${emp.department}` : ''}
                     </option>
@@ -209,6 +214,17 @@ function TaskForm() {
                   value={formData.contact}
                   onChange={handleChange}
                   placeholder="手机号 / 邮箱 / 微信号"
+                />
+              </div>
+
+              <div className="form-group">
+                <label className="form-label">个人IP定位</label>
+                <textarea
+                  name="ipPositioning"
+                  className="form-textarea"
+                  value={formData.ipPositioning}
+                  onChange={handleChange}
+                  placeholder="客户个人IP定位"
                 />
               </div>
 
@@ -252,17 +268,6 @@ function TaskForm() {
                 </select>
                 {errors.platformName && <div className="form-error-text">⚠ {errors.platformName}</div>}
               </div>
-
-              <div className="form-group">
-                <label className="form-label">备注</label>
-                <textarea
-                  name="notes"
-                  className="form-textarea"
-                  value={formData.notes}
-                  onChange={handleChange}
-                  placeholder="填写额外需求说明"
-                />
-              </div>
             </div>
 
             <div className="task-form-card-footer">
@@ -279,38 +284,36 @@ function TaskForm() {
 
             <div className="task-form-card-body">
               <div className="form-group">
-                <label className="form-label">内容需求</label>
+                <label className="form-label">内容需求或创意方向</label>
                 <textarea
-                  name="contentRequirements[0]"
+                  name="contentDirection"
                   className="form-textarea"
-                  value={formData.contentRequirements[0]}
+                  value={formData.contentDirection}
                   onChange={handleChange}
                   placeholder="填写内容需求或创意方向"
                 />
               </div>
 
-              <div className="task-form-multi">
-                <div className="form-group">
-                  <label className="form-label">内容需求</label>
-                  <textarea
-                    name="contentRequirements[1]"
-                    className="form-textarea"
-                    value={formData.contentRequirements[1]}
-                    onChange={handleChange}
-                    placeholder="对标账号"
-                  />
-                </div>
+              <div className="form-group">
+                <label className="form-label">对标账号</label>
+                <textarea
+                  name="benchmarkAccounts"
+                  className="form-textarea"
+                  value={formData.benchmarkAccounts}
+                  onChange={handleChange}
+                  placeholder="填写对标账号"
+                />
+              </div>
 
-                <div className="form-group">
-                  <label className="form-label">内容需求</label>
-                  <textarea
-                    name="contentRequirements[2]"
-                    className="form-textarea"
-                    value={formData.contentRequirements[2]}
-                    onChange={handleChange}
-                    placeholder="其他需要同步的内容"
-                  />
-                </div>
+              <div className="form-group">
+                <label className="form-label">备注</label>
+                <textarea
+                  name="notes"
+                  className="form-textarea"
+                  value={formData.notes}
+                  onChange={handleChange}
+                  placeholder="填写额外需求说明"
+                />
               </div>
 
               <div className="form-grid-2">

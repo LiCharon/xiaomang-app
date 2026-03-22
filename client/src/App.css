@@ -803,12 +803,21 @@ a {
   height: 100vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
   background: rgba(255, 255, 255, 0.92);
   backdrop-filter: blur(22px);
   -webkit-backdrop-filter: blur(22px);
   border-left: 1px solid rgba(15, 23, 42, 0.06);
   box-shadow: -24px 0 60px rgba(15, 23, 42, 0.08);
   z-index: 101;
+}
+
+.drawer form {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .drawer-header,
@@ -828,6 +837,12 @@ a {
   border-bottom: none;
   display: flex;
   gap: 0.75rem;
+  position: sticky;
+  bottom: 0;
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  z-index: 2;
 }
 
 .drawer-title {
@@ -846,8 +861,12 @@ a {
 
 .drawer-body {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
   padding: 1.4rem;
+  padding-bottom: 2.2rem;
 }
 
 .batch-card {
@@ -932,7 +951,7 @@ a {
 }
 
 .task-form-card .form-textarea {
-  min-height: 120px;
+  min-height: 255px;
 }
 
 .task-form-card .form-group {

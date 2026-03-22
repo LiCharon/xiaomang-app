@@ -1,15 +1,20 @@
 const mongoose = require('mongoose');
 
 const taskSchema = new mongoose.Schema({
-  customerName: { type: String, required: true },
-  contact: { type: String, default: '' },
+  customerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Customer' },
+  customerName: { type: String, required: true, trim: true },
+  customerOccupation: { type: String, default: '', trim: true },
+  contact: { type: String, default: '', trim: true },
+  ipPositioning: { type: String, default: '', trim: true },
+  contentDirection: { type: String, default: '', trim: true },
+  benchmarkAccounts: { type: String, default: '', trim: true },
+  notes: { type: String, default: '', trim: true },
   ownerId: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
   platformName: { type: String, required: true },
   collaborationPeriod: {
     start: { type: Date, required: true },
     end: { type: Date, required: true }
   },
-  notes: { type: String, default: '' },
   contentRequirements: { type: [String], default: [] },
   status: {
     type: String,
@@ -20,5 +25,7 @@ const taskSchema = new mongoose.Schema({
   priority: { type: String, enum: ['low', 'medium', 'high'], default: 'medium' },
   createdAt: { type: Date, default: Date.now }
 });
+
+taskSchema.index({ customerId: 1, createdAt: -1 });
 
 module.exports = mongoose.model('Task', taskSchema);

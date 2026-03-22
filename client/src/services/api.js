@@ -69,6 +69,15 @@ export const projectAPI = {
   delete: (id) => api.delete(`/projects/${id}`)
 };
 
+// 客户 API
+export const customerAPI = {
+  getAll: () => api.get('/customers'),
+  getById: (id) => api.get(`/customers/${id}`),
+  create: (data) => api.post('/customers', data),
+  update: (id, data) => api.put(`/customers/${id}`, data),
+  delete: (id) => api.delete(`/customers/${id}`)
+};
+
 // 任务 API
 export const taskAPI = {
   getAll: (params) => api.get('/tasks', { params }),

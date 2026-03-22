@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const Task = require('../models/Task');
+const Customer = require('../models/Customer');
 
 // 获取所有任务
 router.get('/', async (req, res) => {
@@ -22,6 +23,7 @@ router.get('/', async (req, res) => {
     
     const tasks = await Task.find(filter)
       .populate('ownerId', 'name email department')
+      .populate('customerId', 'name occupation contact ipPositioning contentNeeds benchmarkAccounts notes')
       .sort({ 'collaborationPeriod.start': 1, createdAt: -1 });
     res.json(tasks);
   } catch (err) {
@@ -33,7 +35,8 @@ router.get('/', async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const task = await Task.findById(req.params.id)
-      .populate('ownerId', 'name email department');
+      .populate('ownerId', 'name email department')
+      .populate('customerId', 'name occupation contact ipPositioning contentNeeds benchmarkAccounts notes');
     if (!task) return res.status(404).json({ error: '任务不存在' });
     res.json(task);
   } catch (err) {
@@ -44,10 +47,27 @@ router.get('/:id', async (req, res) => {
 // 创建任务
 router.post('/', async (req, res) => {
   try {
-    const task = new Task(req.body);
+    const payload = { ...req.body };
+
+    if (payload.customerId) {
+      const customer = await Customer.findById(payload.customerId);
+      if (!customer) {
+        return res.status(400).json({ error: '所选客户不存在，请重新选择' });
+      }
+      payload.customerName = payload.customerName || customer.name;
+      payload.customerOccupation = payload.customerOccupation || customer.occupation;
+      payload.contact = payload.contact || customer.contact;
+      payload.ipPositioning = payload.ipPositioning || customer.ipPositioning;
+      payload.contentDirection = payload.contentDirection || customer.contentNeeds;
+      payload.benchmarkAccounts = payload.benchmarkAccounts || customer.benchmarkAccounts;
+      payload.notes = payload.notes || customer.notes;
+    }
+
+    const task = new Task(payload);
     await task.save();
     const populated = await Task.findById(task._id)
-      .populate('ownerId', 'name email department');
+      .populate('ownerId', 'name email department')
+      .populate('customerId', 'name occupation contact ipPositioning contentNeeds benchmarkAccounts notes');
     res.status(201).json(populated);
   } catch (err) {
     console.error('创建任务失败:', err);
@@ -68,7 +88,8 @@ router.post('/batch', async (req, res) => {
     const createdTasks = await Task.insertMany(tasks);
     const ids = createdTasks.map(task => task._id);
     const populated = await Task.find({ _id: { $in: ids } })
-      .populate('ownerId', 'name email department');
+      .populate('ownerId', 'name email department')
+      .populate('customerId', 'name occupation contact ipPositioning contentNeeds benchmarkAccounts notes');
     res.status(201).json(populated);
   } catch (err) {
     res.status(400).json({ error: err.message });
@@ -83,7 +104,8 @@ router.put('/:id', async (req, res) => {
       req.body,
       { new: true }
     )
-      .populate('ownerId', 'name email department');
+      .populate('ownerId', 'name email department')
+      .populate('customerId', 'name occupation contact ipPositioning contentNeeds benchmarkAccounts notes');
     if (!task) return res.status(404).json({ error: '任务不存在' });
     res.json(task);
   } catch (err) {

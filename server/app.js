@@ -11,6 +11,7 @@ const authMiddleware = require('./middleware/auth');
 const employeeRoutes = require('./routes/employees');
 const projectRoutes = require('./routes/projects');
 const taskRoutes = require('./routes/tasks');
+const customerRoutes = require('./routes/customers');
 const aiRoutes = require('./routes/ai');
 
 const app = express();
@@ -30,6 +31,7 @@ app.use(async (req, res, next) => {
 app.use('/api/auth', authRoutes);
 app.use('/api/employees', authMiddleware, employeeRoutes);
 app.use('/api/projects', authMiddleware, projectRoutes);
+app.use('/api/customers', authMiddleware, customerRoutes);
 app.use('/api/tasks', authMiddleware, taskRoutes);
 app.use('/api/ai', authMiddleware, aiRoutes);
 

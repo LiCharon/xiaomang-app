@@ -11,6 +11,7 @@ import {
 import TaskList from './pages/TaskList.jsx';
 import TaskForm from './pages/TaskForm.jsx';
 import EmployeeList from './pages/EmployeeList.jsx';
+import CustomerList from './pages/CustomerList.jsx';
 import Login from './pages/Login.jsx';
 import ProtectedRoute from './components/ProtectedRoute.jsx';
 import { authAPI, clearStoredToken, getStoredToken, storeToken } from './services/api';
@@ -19,12 +20,14 @@ import './App.css';
 const NAV_ITEMS = [
   { to: '/', label: '任务' },
   { to: '/tasks/new', label: '新建任务' },
+  { to: '/customers', label: '客户' },
   { to: '/employees', label: '员工' }
 ];
 
 const PAGE_TITLES = {
   '/': { title: '任务总览', sub: '集中查看和推进所有任务事项' },
   '/tasks/new': { title: '创建任务', sub: '为团队新增一项清晰可执行的任务' },
+  '/customers': { title: '客户档案', sub: '经理入口：维护客户基础信息与内容需求' },
   '/employees': { title: '团队成员', sub: '经理入口：管理员工账号信息' }
 };
 
@@ -173,6 +176,7 @@ function App() {
         >
           <Route index element={<TaskList />} />
           <Route path="tasks/new" element={<TaskForm />} />
+          <Route path="customers" element={<CustomerList />} />
           <Route path="employees" element={<EmployeeList />} />
         </Route>
         <Route

@@ -187,8 +187,11 @@ function TaskList() {
                   const { cls: statusCls } = getStatusInfo(task.status);
                   const overdue = isOverdue(task.collaborationPeriod) && task.status !== 'completed';
                   const ownerName = task.ownerId?.name;
-                  const requirementsPreview = (task.contentRequirements || []).filter(Boolean).join(' · ');
-                  const subText = requirementsPreview || task.notes || task.contact;
+                  const requirementsPreview = [
+                    task.contentDirection,
+                    ...(task.contentRequirements || [])
+                  ].filter(Boolean).join(' · ');
+                  const subText = requirementsPreview || task.benchmarkAccounts || task.notes || task.contact;
                   return (
                     <tr key={task._id}>
                       <td style={{ maxWidth: 260 }}>

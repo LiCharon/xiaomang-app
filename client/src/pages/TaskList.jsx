@@ -12,35 +12,51 @@ function getAvatarClass(name) {
 
 function getStatusInfo(status) {
   switch (status) {
-    case 'pending':     return { label: '待处理',  cls: 'status-pending' };
-    case 'in_progress': return { label: '进行中',  cls: 'status-in_progress' };
-    case 'completed':   return { label: '已完成',  cls: 'status-completed' };
-    default:            return { label: status,    cls: '' };
+    case 'pending':
+      return { label: '待处理', cls: 'status-pending' };
+    case 'in_progress':
+      return { label: '进行中', cls: 'status-in_progress' };
+    case 'completed':
+      return { label: '已完成', cls: 'status-completed' };
+    default:
+      return { label: status, cls: '' };
   }
 }
 
 function getPriorityInfo(priority) {
   switch (priority) {
-    case 'high':   return { label: '高', cls: 'priority-high' };
-    case 'medium': return { label: '中', cls: 'priority-medium' };
-    case 'low':    return { label: '低', cls: 'priority-low' };
-    default:       return { label: priority, cls: '' };
+    case 'high':
+      return { label: '高', cls: 'priority-high' };
+    case 'medium':
+      return { label: '中', cls: 'priority-medium' };
+    case 'low':
+      return { label: '低', cls: 'priority-low' };
+    default:
+      return { label: priority, cls: '' };
   }
 }
 
 function isOverdue(collaborationPeriod) {
   if (!collaborationPeriod?.end) return false;
-  return new Date(collaborationPeriod.end) < new Date() && true;
+  return new Date(collaborationPeriod.end) < new Date();
+}
+
+function formatDate(value) {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString('zh-CN');
 }
 
 function TaskList() {
   const [tasks, setTasks] = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState({ status: '', employeeId: '', date: '' });
+  const [detailTask, setDetailTask] = useState(null);
 
   useEffect(() => {
     fetchTasks();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
 
   const fetchTasks = async () => {
@@ -73,14 +89,17 @@ function TaskList() {
     try {
       await taskAPI.update(id, { status: newStatus });
       fetchTasks();
+      if (detailTask && detailTask._id === id) {
+        setDetailTask((prev) => ({ ...prev, status: newStatus }));
+      }
     } catch (error) {
       console.error('更新任务状态失败:', error);
     }
   };
 
-  const pending = tasks.filter(t => t.status === 'pending').length;
-  const inProgress = tasks.filter(t => t.status === 'in_progress').length;
-  const completed = tasks.filter(t => t.status === 'completed').length;
+  const pending = tasks.filter((t) => t.status === 'pending').length;
+  const inProgress = tasks.filter((t) => t.status === 'in_progress').length;
+  const completed = tasks.filter((t) => t.status === 'completed').length;
 
   return (
     <div>
@@ -94,7 +113,6 @@ function TaskList() {
         </Link>
       </div>
 
-      {/* Stats Bar */}
       <div className="stats-grid">
         <div className="stat-card">
           <div className="stat-icon stat-icon-yellow">⏳</div>
@@ -119,7 +137,6 @@ function TaskList() {
         </div>
       </div>
 
-      {/* Filter Bar + Table */}
       <div className="card">
         <div className="filter-bar">
           <select
@@ -172,7 +189,7 @@ function TaskList() {
             <table className="table">
               <thead>
                 <tr>
-                  <th>任务名称</th>
+                  <th>客户 / 任务信息</th>
                   <th>负责人</th>
                   <th>目标平台</th>
                   <th>任务周期</th>
@@ -182,25 +199,28 @@ function TaskList() {
                 </tr>
               </thead>
               <tbody>
-                {tasks.map(task => {
+                {tasks.map((task) => {
                   const { label: priorityLabel, cls: priorityCls } = getPriorityInfo(task.priority);
                   const { cls: statusCls } = getStatusInfo(task.status);
                   const overdue = isOverdue(task.collaborationPeriod) && task.status !== 'completed';
                   const ownerName = task.ownerId?.name;
-                  const requirementsPreview = [
-                    task.contentDirection,
-                    ...(task.contentRequirements || [])
-                  ].filter(Boolean).join(' · ');
-                  const subText = requirementsPreview || task.benchmarkAccounts || task.notes || task.contact;
+
                   return (
                     <tr key={task._id}>
-                      <td style={{ maxWidth: 260 }}>
+                      <td style={{ maxWidth: 320 }}>
                         <div className="table-cell-primary">{task.customerName}</div>
-                        {subText && (
-                          <div className="table-cell-sub">
-                            {subText}
-                          </div>
-                        )}
+                        <div className="table-cell-sub">
+                          联系方式：{task.contact || '—'}
+                        </div>
+                        <div className="table-cell-sub">
+                          内容需求：{task.contentDirection || '—'}
+                        </div>
+                        <div className="table-cell-sub">
+                          对标账号：{task.benchmarkAccounts || '—'}
+                        </div>
+                        <div className="table-cell-sub">
+                          备注：{task.notes || '—'}
+                        </div>
                       </td>
                       <td>
                         {ownerName ? (
@@ -218,10 +238,12 @@ function TaskList() {
                       <td>
                         {task.collaborationPeriod ? (
                           <span style={{ color: overdue ? '#ef4444' : 'inherit', fontWeight: overdue ? 500 : 400 }}>
-                            {task.collaborationPeriod.start} ~ {task.collaborationPeriod.end}
+                            {formatDate(task.collaborationPeriod.start)} ~ {formatDate(task.collaborationPeriod.end)}
                             {overdue && <span style={{ fontSize: '0.72rem', marginLeft: 4 }}>逾期</span>}
                           </span>
-                        ) : <span style={{ color: '#94a3b8' }}>—</span>}
+                        ) : (
+                          <span style={{ color: '#94a3b8' }}>—</span>
+                        )}
                       </td>
                       <td>
                         <span className={`priority-badge ${priorityCls}`}>{priorityLabel}</span>
@@ -238,12 +260,14 @@ function TaskList() {
                         </select>
                       </td>
                       <td>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDelete(task._id)}
-                        >
-                          删除
-                        </button>
+                        <div style={{ display: 'flex', gap: '0.4rem' }}>
+                          <button className="btn btn-secondary btn-sm" onClick={() => setDetailTask(task)}>
+                            查看详情
+                          </button>
+                          <button className="btn btn-danger btn-sm" onClick={() => handleDelete(task._id)}>
+                            删除
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -253,6 +277,86 @@ function TaskList() {
           </div>
         )}
       </div>
+
+      {detailTask && (
+        <>
+          <div className="drawer-overlay" onClick={() => setDetailTask(null)} />
+          <div className="task-detail-modal">
+            <div className="task-detail-header">
+              <div>
+                <div className="task-detail-title">任务详情</div>
+                <div className="task-detail-subtitle">{detailTask.customerName || '未命名任务'}</div>
+              </div>
+              <button className="drawer-close" onClick={() => setDetailTask(null)}>✕</button>
+            </div>
+
+            <div className="task-detail-body">
+              <div className="task-detail-grid">
+                <div className="task-detail-item">
+                  <div className="task-detail-label">客户名称</div>
+                  <div className="task-detail-value">{detailTask.customerName || '—'}</div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">职业</div>
+                  <div className="task-detail-value">{detailTask.customerOccupation || '—'}</div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">联系方式</div>
+                  <div className="task-detail-value">{detailTask.contact || '—'}</div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">负责人</div>
+                  <div className="task-detail-value">{detailTask.ownerId?.name || '—'}</div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">目标平台</div>
+                  <div className="task-detail-value">{detailTask.platformName || '—'}</div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">任务周期</div>
+                  <div className="task-detail-value">
+                    {formatDate(detailTask.collaborationPeriod?.start)} ~ {formatDate(detailTask.collaborationPeriod?.end)}
+                  </div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">优先级</div>
+                  <div className="task-detail-value">{getPriorityInfo(detailTask.priority).label}</div>
+                </div>
+                <div className="task-detail-item">
+                  <div className="task-detail-label">状态</div>
+                  <div className="task-detail-value">{getStatusInfo(detailTask.status).label}</div>
+                </div>
+              </div>
+
+              <div className="task-detail-item">
+                <div className="task-detail-label">个人IP定位</div>
+                <div className="task-detail-value">{detailTask.ipPositioning || '—'}</div>
+              </div>
+
+              <div className="task-detail-item">
+                <div className="task-detail-label">内容需求 / 创意方向</div>
+                <div className="task-detail-value">{detailTask.contentDirection || '—'}</div>
+              </div>
+
+              <div className="task-detail-item">
+                <div className="task-detail-label">对标账号</div>
+                <div className="task-detail-value">{detailTask.benchmarkAccounts || '—'}</div>
+              </div>
+
+              <div className="task-detail-item">
+                <div className="task-detail-label">备注</div>
+                <div className="task-detail-value">{detailTask.notes || '—'}</div>
+              </div>
+            </div>
+
+            <div className="task-detail-footer">
+              <button className="btn btn-secondary" onClick={() => setDetailTask(null)}>
+                关闭
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

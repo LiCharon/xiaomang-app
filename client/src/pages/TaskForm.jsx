@@ -2,6 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { taskAPI, employeeAPI, customerAPI } from '../services/api';
 
+function splitContentRequirements(value) {
+  return [...new Set(String(value || '')
+    .split(/[\n,，;；]+/)
+    .map((item) => item.trim())
+    .filter(Boolean))].slice(0, 8);
+}
+
 function TaskForm() {
   const navigate = useNavigate();
   const [loading, setLoading] = useState(false);
@@ -16,6 +23,7 @@ function TaskForm() {
     contact: '',
     ipPositioning: '',
     contentDirection: '',
+    contentRequirementsText: '',
     benchmarkAccounts: '',
     ownerId: '',
     platformName: '',
@@ -53,6 +61,7 @@ function TaskForm() {
       contact: customer.contact || '',
       ipPositioning: customer.ipPositioning || '',
       contentDirection: customer.contentNeeds || '',
+      contentRequirementsText: '',
       benchmarkAccounts: customer.benchmarkAccounts || '',
       notes: customer.notes || ''
     }));
@@ -71,6 +80,7 @@ function TaskForm() {
           contact: '',
           ipPositioning: '',
           contentDirection: '',
+          contentRequirementsText: '',
           benchmarkAccounts: '',
           notes: ''
         }));
@@ -107,8 +117,10 @@ function TaskForm() {
 
     try {
       setLoading(true);
+      const { contentRequirementsText, ...taskFields } = formData;
       const payload = {
-        ...formData,
+        ...taskFields,
+        contentRequirements: splitContentRequirements(contentRequirementsText),
         collaborationPeriod: {
           start: formData.collaborationStart,
           end: formData.collaborationEnd
@@ -145,6 +157,18 @@ function TaskForm() {
             </div>
 
             <div className="task-form-card-body">
+              <div className="form-group">
+                <label className="form-label">内容要求标签</label>
+                <textarea
+                  name="contentRequirementsText"
+                  className="form-textarea"
+                  value={formData.contentRequirementsText}
+                  onChange={handleChange}
+                  placeholder="每行一个，或用逗号分隔，例如：真实案例、口语化表达、给出可执行建议"
+                />
+                <div className="form-hint">保存后会作为任务标签同步到工作站，最多 8 个。</div>
+              </div>
+
               <div className="form-group">
                 <label className="form-label">选择客户档案</label>
                 <select

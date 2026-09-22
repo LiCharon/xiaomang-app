@@ -1,0 +1,244 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+
+import {
+  MAX_REFERENCE_IMAGES,
+  editImage,
+  generateImage,
+  getImageConfig,
+  isImageGenerationConfigured,
+  normalizeImageResponse,
+} from "../api/_lib/contentAgent/imageProvider.js";
+
+/**
+ * 出图 provider 的契约测试。
+ *
+ * 🔴 全程**不发出真实请求**（stub 掉 global.fetch）—— 出图是按张计费的，
+ * 单测绝不能真的调网关。这里钉的是「请求长什么样 / 返回怎么解析 / 不可用时怎么降级」。
+ */
+
+const PNG_1PX = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFAAH/q842iQAAAABJRU5ErkJggg==";
+
+const withStubbedFetch = async (handler, run) => {
+  const original = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    return handler(String(url), init);
+  };
+  try {
+    return await run(calls);
+  } finally {
+    globalThis.fetch = original;
+  }
+};
+
+const jsonResponse = (payload, status = 200) =>
+  new Response(JSON.stringify(payload), { status, headers: { "Content-Type": "application/json" } });
+
+const config = { baseUrl: "https://example.test", apiKey: "test-key", model: "gpt-image-2.5-sunburst", timeoutMs: 5000 };
+
+test("没配密钥时如实报「未配置」而不是发请求 —— 调用方据此降级", async () => {
+  assert.equal(isImageGenerationConfigured({}), false);
+  assert.equal(isImageGenerationConfigured({ XXCAPI_API_KEY: "k" }), true);
+  assert.equal(getImageConfig({}).model, "gpt-image-2.5-sunburst", "默认模型");
+  assert.equal(getImageConfig({ XXCAPI_BASE_URL: "https://x.test/" }).baseUrl, "https://x.test/");
+
+  await withStubbedFetch(
+    () => { throw new Error("不该发请求"); },
+    async (calls) => {
+      await assert.rejects(
+        () => generateImage("一只猫", { config: { ...config, apiKey: "" } }),
+        error => error.code === "IMAGE_NOT_CONFIGURED" && error.status === 501,
+      );
+      assert.equal(calls.length, 0, "没配密钥就一个请求都不该发");
+    },
+  );
+});
+
+test("文生图：打到 /v1/images/generations，带 Bearer 与规范化后的参数", async () => {
+  await withStubbedFetch(
+    () => jsonResponse({ data: [{ url: "https://cdn.test/a.png" }] }),
+    async (calls) => {
+      const result = await generateImage("超龄用工新规封面", {
+        config,
+        size: "1024x1536",
+        quality: "xhigh",
+        aspectRatio: "3:4",
+        background: "opaque",
+      });
+
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].url, "https://example.test/v1/images/generations");
+      assert.equal(calls[0].init.method, "POST");
+      assert.equal(calls[0].init.headers.Authorization, "Bearer test-key");
+
+      const body = JSON.parse(calls[0].init.body);
+      assert.equal(body.model, "gpt-image-2.5-sunburst");
+      assert.equal(body.prompt, "超龄用工新规封面");
+      assert.equal(body.size, "1024x1536");
+      assert.equal(body.quality, "xhigh");
+      assert.equal(body.aspectRatio, "3:4");
+      assert.equal(body.response_format, "url");
+      // 网关明确要求不要传 provider（会与模型变体冲突）。
+      assert.equal("provider" in body, false);
+      assert.equal(result.images[0].url, "https://cdn.test/a.png");
+    },
+  );
+});
+
+test("非法参数被收敛到安全默认值，不会把野值透给网关", async () => {
+  await withStubbedFetch(
+    () => jsonResponse({ data: [{ url: "https://cdn.test/a.png" }] }),
+    async (calls) => {
+      await generateImage("x", {
+        config,
+        size: "巨大",
+        quality: "ultra",
+        background: "彩虹",
+        aspectRatio: "随便",
+        count: 99,
+      });
+      const body = JSON.parse(calls[0].init.body);
+      assert.equal(body.size, "2K");
+      assert.equal(body.quality, "high");
+      assert.equal(body.background, "opaque");
+      assert.equal(body.aspectRatio, "3:4");
+      assert.equal(body.n, 4, "张数夹到上限 4");
+    },
+  );
+});
+
+test("认 url 与 b64_json 两种返回 —— 网关配置不同返回不同", () => {
+  assert.deepEqual(
+    normalizeImageResponse({ data: [{ url: "https://cdn.test/a.png" }] }),
+    [{ url: "https://cdn.test/a.png", dataUrl: "" }],
+  );
+  const fromB64 = normalizeImageResponse({ data: [{ b64_json: PNG_1PX }] });
+  assert.equal(fromB64[0].url, "");
+  assert.match(fromB64[0].dataUrl, /^data:image\/png;base64,/);
+  // 顶层 url 的兜底形状
+  assert.deepEqual(normalizeImageResponse({ url: "https://cdn.test/b.png" }), [{ url: "https://cdn.test/b.png", dataUrl: "" }]);
+  // 垃圾输入回空数组（由调用方判定成失败，不能假装成功）
+  assert.deepEqual(normalizeImageResponse(null), []);
+  assert.deepEqual(normalizeImageResponse({ data: [{}] }), []);
+});
+
+test("返回里没有图片时报「没有返回任何图片」—— 不能静默回空让上层以为成功", async () => {
+  await withStubbedFetch(
+    () => jsonResponse({ data: [] }),
+    async () => {
+      await assert.rejects(() => generateImage("x", { config }), error => error.code === "IMAGE_EMPTY_RESULT");
+    },
+  );
+});
+
+test("网关返回非 2xx 时把状态码与报错片段带回来（截断，避免日志被撑爆）", async () => {
+  await withStubbedFetch(
+    () => new Response("x".repeat(5000), { status: 429 }),
+    async () => {
+      await assert.rejects(
+        () => generateImage("x", { config }),
+        error => error.code === "IMAGE_HTTP_ERROR"
+          && error.details.status === 429
+          && error.details.body.length === 500,
+      );
+    },
+  );
+});
+
+test("参考图编辑：走 multipart，带 image[] 与 output_format，且能下载 http 参考图", async () => {
+  await withStubbedFetch(
+    (url) => {
+      if (url.includes("/images/edits")) return jsonResponse({ data: [{ b64_json: PNG_1PX }] });
+      // 参考图下载
+      return new Response(Buffer.from(PNG_1PX, "base64"), { status: 200, headers: { "Content-Type": "image/png" } });
+    },
+    async (calls) => {
+      const result = await editImage(
+        "把背景换成办公室，保留人物",
+        [{ url: "https://cdn.test/ref-1.png" }, { dataUrl: `data:image/png;base64,${PNG_1PX}` }],
+        { config, aspectRatio: "3:4" },
+      );
+
+      const editCall = calls.find(call => call.url.includes("/images/edits"));
+      assert.ok(editCall, "必须打到 /v1/images/edits");
+      assert.ok(editCall.init.body instanceof FormData, "编辑接口用 multipart 而不是 JSON");
+      assert.equal(editCall.init.headers.Authorization, "Bearer test-key");
+      // 不要手写 Content-Type —— 必须让 fetch 自己带 boundary。
+      assert.equal("Content-Type" in editCall.init.headers, false);
+
+      const form = editCall.init.body;
+      assert.equal(form.get("model"), "gpt-image-2.5-sunburst");
+      assert.equal(form.get("prompt"), "把背景换成办公室，保留人物");
+      assert.equal(form.get("aspect_ratio"), "3:4");
+      assert.equal(form.get("output_format"), "png");
+      assert.equal(form.getAll("image[]").length, 2, "两张参考图都要带上");
+
+      assert.match(result.images[0].dataUrl, /^data:image\/png;base64,/);
+    },
+  );
+});
+
+test("参考图必须有 url 或 dataUrl；一张都没有时明确报错", async () => {
+  await assert.rejects(
+    () => editImage("x", [], { config }),
+    error => error.code === "IMAGE_NO_REFERENCE",
+  );
+  await assert.rejects(
+    () => editImage("x", [{ name: "只有名字" }], { config }),
+    error => error.code === "IMAGE_BAD_REFERENCE",
+  );
+  await assert.rejects(
+    () => editImage("x", [{ dataUrl: "data:image/png;base64" }], { config }),
+    error => error.code === "IMAGE_BAD_REFERENCE",
+  );
+});
+
+test("参考图超过体积上限时提前报错，不打给网关白等", async () => {
+  await withStubbedFetch(
+    () => { throw new Error("不该发请求"); },
+    async (calls) => {
+      // 构造一张 > 8MB 的假图（全 0 的 base64 会被压缩，所以用随机字节）。
+      const big = Buffer.alloc(9 * 1024 * 1024, 7).toString("base64");
+      await assert.rejects(
+        () => editImage("x", [{ dataUrl: `data:image/png;base64,${big}` }], { config }),
+        error => error.code === "IMAGE_REFERENCE_TOO_LARGE" && error.status === 413,
+      );
+      assert.equal(calls.length, 0, "超限就该在本地拦下");
+    },
+  );
+});
+
+test("参考图张数夹到上限 —— 不让一次请求带十几张把网关打挂", async () => {
+  await withStubbedFetch(
+    (url) => (url.includes("/images/edits")
+      ? jsonResponse({ data: [{ url: "https://cdn.test/a.png" }] })
+      : new Response(Buffer.from(PNG_1PX, "base64"), { status: 200, headers: { "Content-Type": "image/png" } })),
+    async (calls) => {
+      const many = Array.from({ length: 10 }, (_, index) => ({ url: `https://cdn.test/ref-${index}.png` }));
+      await editImage("x", many, { config });
+      const editCall = calls.find(call => call.url.includes("/images/edits"));
+      assert.equal(editCall.init.body.getAll("image[]").length, MAX_REFERENCE_IMAGES);
+    },
+  );
+});
+
+test("日志里不出现密钥与图片内容（只记长度/张数/耗时）", async () => {
+  const logged = [];
+  const logger = {
+    info: (event, meta) => logged.push({ event, meta }),
+    warn: (event, meta) => logged.push({ event, meta }),
+  };
+  await withStubbedFetch(
+    () => jsonResponse({ data: [{ b64_json: PNG_1PX }] }),
+    async () => {
+      await generateImage("很长的提示词".repeat(50), { config, logger });
+    },
+  );
+  const text = JSON.stringify(logged);
+  assert.equal(text.includes("test-key"), false, "日志里绝不能出现密钥");
+  assert.equal(text.includes(PNG_1PX.slice(0, 40)), false, "日志里绝不能出现图片内容");
+  assert.ok(logged.some(item => item.event === "image.generate.start"));
+  assert.ok(logged.some(item => item.event === "image.generate.done"));
+});

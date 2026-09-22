@@ -1,26 +1,22 @@
 {
-  "name": "ai-project-assistant",
+  "name": "xiaomang",
   "version": "1.0.0",
   "private": true,
-  "description": "AI Project Assistant - 智能项目任务管理与桌宠提醒",
+  "type": "module",
   "workspaces": [
-    "client",
-    "server"
+    "apps/*",
+    "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace client",
-    "start": "npm run start --workspace server",
-    "client": "npm run dev --workspace client",
-    "client:build": "npm run build --workspace client",
-    "server": "npm run start --workspace server",
-    "server:dev": "npm run dev --workspace server",
-    "dev": "concurrently \"npm run server:dev\" \"npm run client\"",
-    "install-all": "npm install"
+    "dev": "npm-run-all --parallel dev:web dev:server",
+    "dev:web": "npm run dev --workspace @xiaomang/web",
+    "dev:server": "npm run dev --workspace @xiaomang/server",
+    "build": "npm run build --workspace @xiaomang/web",
+    "start": "npm run start --workspace @xiaomang/server",
+    "test": "npm run test --workspace @xiaomang/server",
+    "verify:routes": "npm run verify:routes --workspace @xiaomang/server"
   },
   "devDependencies": {
-    "concurrently": "^9.1.2"
-  },
-  "keywords": ["ai", "project-management", "pet", "reminder"],
-  "author": "",
-  "license": "ISC"
+    "npm-run-all": "^4.1.5"
+  }
 }

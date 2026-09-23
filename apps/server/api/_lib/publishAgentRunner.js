@@ -14,10 +14,12 @@
 
 import { getContentAgentConfig } from "./contentAgent/config.js";
 import {
+  buildCoverStyleRefineInput,
   buildPublishCopyInput,
   buildPublishCoverInput,
   buildPublishTagsInput,
   runBenchmarkCoverAnalysisAgent,
+  runCoverStyleRefineAgent,
   runPublishCopyAgent,
   runPublishCoverAgent,
   runPublishTagsAgent,
@@ -191,7 +193,7 @@ const summarizeAccountContext = context => {
  * 声明在使用之后会撞 TDZ（`ReferenceError`），而且**只在「phase 传错」这条路径上炸**
  * —— 正常路径全绿，一传错就 500 而不是可读的 400。HANDOFF §0.0-F2 记过同类坑。
  */
-export const PUBLISH_PHASES = ["cover-plan", "cover-base-analysis", "cover-portrait-plan", "cover-title-metrics", "cover-image", "publish-copy", "account-tags", "topic-tags"];
+export const PUBLISH_PHASES = ["cover-plan", "cover-base-analysis", "cover-portrait-plan", "cover-style-refine", "cover-title-metrics", "cover-image", "publish-copy", "account-tags", "topic-tags"];
 
 /**
  * 执行一个 phase。
@@ -257,6 +259,21 @@ export const runPublishPhase = async ({ phase, body = {}, user, logger, config =
       ipPortrait: plan.ipPortrait,
       imageGenerationAvailable: isImageGenerationConfigured(),
     };
+  }
+
+  if (target === "cover-style-refine") {
+    // 标题样式的自然语言微调（用户口径：样式由视觉模型识别，之后用聊天框自然语言调整）。
+    // 纯文本调用，不出图。
+    const instruction = cleanText(body?.instruction, 800);
+    if (!instruction) throw badRequest("请说明要调整什么");
+    const current = body?.titleStyle && typeof body.titleStyle === "object" ? body.titleStyle : {};
+    const input = buildCoverStyleRefineInput({
+      titleStyle: current,
+      instruction,
+      recognized: body?.recognized || null,
+      history: Array.isArray(body?.history) ? body.history : [],
+    });
+    return { phase: target, ...(await runCoverStyleRefineAgent(input, current, config, { logger })) };
   }
 
   if (target === "cover-title-metrics") {

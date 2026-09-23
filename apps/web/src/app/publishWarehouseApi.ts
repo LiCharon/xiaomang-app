@@ -243,6 +243,18 @@ export const requestPortraitPlan = (payload: { customerId: string }) =>
 export const requestCoverTitleMetrics = (payload: { titles: string[]; titleStyle: Partial<TitleStyleTemplate> }) =>
   post<{ items: TitleMetric[] }>("/api/agent/publish", { phase: "cover-title-metrics", ...payload });
 
+/**
+ * 用自然语言微调标题样式（用户口径：样式由视觉模型识别，之后用聊天框说怎么改）。
+ * 纯文本调用，不出图。
+ */
+export const refineCoverStyle = (payload: {
+  titleStyle: Partial<TitleStyleTemplate>;
+  instruction: string;
+  /** 视觉模型识别出来的原始描述 —— 用户常常是在否定它（「这不是书法体」）。 */
+  recognized?: Record<string, unknown> | null;
+  history?: Array<{ role: string; text: string }>;
+}) => post<{ titleStyle: TitleStyleTemplate; reply: string }>("/api/agent/publish", { phase: "cover-style-refine", ...payload });
+
 // ── 持久化 ──────────────────────────────────────────────────────────────────
 
 export const listPublishSelections = async (customerId: string): Promise<PublishSelection[]> => {

@@ -27,6 +27,8 @@ test("phase 清单与两套后端路由保持一致（含出图那个花钱的 p
     "cover-base-analysis",
     // 账号级：只按账号规划/人设定位出 IP 形象照的提示词（topic 传空，不被选题影响）。
     "cover-portrait-plan",
+    // 标题样式的自然语言微调（用户聊天框里说怎么改，纯文本调用）。
+    "cover-style-refine",
     // 纯计算（不调模型）：按基底标题样式给每个候选标题算字号与行数。
     "cover-title-metrics",
     "cover-image",

@@ -16,7 +16,7 @@
  */
 
 import { getContentAgentConfig } from "./config.js";
-import { BENCHMARK_COVER_ANALYSIS_PROMPT, PUBLISH_COPY_PROMPT, PUBLISH_COVER_PROMPT, PUBLISH_TAGS_PROMPT } from "./prompts.js";
+import { BENCHMARK_COVER_ANALYSIS_PROMPT, COVER_STYLE_REFINE_PROMPT, PUBLISH_COPY_PROMPT, PUBLISH_COVER_PROMPT, PUBLISH_TAGS_PROMPT } from "./prompts.js";
 import { runJsonAgent, understandDoubaoImage } from "./providers.js";
 import { parseJsonAgentOutput } from "./adapter.js";
 import {
@@ -24,6 +24,7 @@ import {
   normalizeBenchmarkCoverAnalysis,
   normalizeCoverPlan,
   normalizePublishCopy,
+  normalizeTitleStyleTemplate,
   normalizeTopicTags,
 } from "../publishWarehouse.js";
 
@@ -95,6 +96,21 @@ export const buildPublishTagsInput = ({ phase = "account", topic = {}, accountPl
   ].filter(Boolean).join("\n\n");
 };
 
+/**
+ * 标题样式自然语言微调的输入组装。
+ *
+ * 带上「视觉模型识别出来的原始描述」：用户改的往往正是**识别得不对**的地方
+ * （「这不是书法体」），没有原文的话模型不知道他在否定什么。
+ */
+export const buildCoverStyleRefineInput = ({ titleStyle = null, instruction = "", recognized = null, history = [] } = {}) => [
+  section("当前标题样式（用户没说到的字段要原样保留）", titleStyle, 1200),
+  section("视觉模型对这张图标题样式的原始描述（用户可能是在否定它）", recognized, 1200),
+  section("用户的要求", instruction, 800),
+  Array.isArray(history) && history.length > 0
+    ? section("最近的对话（仅供理解上下文，不要重复回答）", history.slice(-6), 1200)
+    : "",
+].filter(Boolean).join("\n\n");
+
 /** 3.1 封面：出方案（提示词 + 样式模板 + 背景候选）。 */
 export const runPublishCoverAgent = async (input, config = getContentAgentConfig(), options = {}) => {
   const plan = await runJsonAgent({
@@ -125,6 +141,21 @@ export const runPublishCopyAgent = async (input, reuse = {}, config = getContent
     normalizer: value => value,
   }, config, options);
   return normalizePublishCopy(agentValue, reuse);
+};
+
+/** 3.1 封面基底：把「视觉模型识别出的标题样式」按用户自然语言微调（只改他提到的那部分）。 */
+export const runCoverStyleRefineAgent = async (input, fallbackStyle = null, config = getContentAgentConfig(), options = {}) => {
+  const value = await runJsonAgent({
+    system: COVER_STYLE_REFINE_PROMPT,
+    user: input,
+    interfaceName: "deepseek:cover-style-refine",
+    normalizer: raw => raw,
+  }, config, options);
+  return {
+    // 模型没回样式时退回当前样式（而不是清空）—— 清空会让用户刚调好的东西凭空消失。
+    titleStyle: normalizeTitleStyleTemplate(value?.titleStyle || fallbackStyle || {}),
+    reply: cleanText(value?.reply, 200),
+  };
 };
 
 /** 3.1 封面基底第一步：上传一张对标封面图 → 拆解（画风 / 元素 / 排版 / 视觉风格 + 留白 + 标题样式）。 */

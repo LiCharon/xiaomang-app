@@ -148,15 +148,23 @@ export default function FinalEditorPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 px-8 py-6">
-        <div className="max-w-[1400px] mx-auto flex items-center justify-between gap-3">
+    <div className="min-h-screen bg-[#f5f7fb]">
+      <header className="border-b border-slate-200/80 bg-white/80 px-5 py-6 backdrop-blur sm:px-8 lg:px-10">
+        <div className="mx-auto flex max-w-[1400px] flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">最终文案编辑页</h1>
-            <p className="text-sm text-slate-500 mt-1">已自动载入上一步勾选内容，可直接编辑。</p>
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
+              <span className="h-2 w-2 rounded-full bg-blue-600" />
+              FINAL DRAFT
+            </div>
+            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">最终文案编辑页</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500">已自动载入上一步勾选内容，可直接编辑。</p>
           </div>
-          <Button variant="outline" onClick={() => navigate("/content") }>
-            <ArrowLeft className="h-4 w-4 mr-2" />
+          <Button
+            variant="outline"
+            className="h-10 rounded-xl border-slate-200 bg-white text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
+            onClick={() => navigate("/content")}
+          >
+            <ArrowLeft className="mr-2 h-4 w-4" />
             返回内容确认页
           </Button>
         </div>
@@ -197,7 +205,7 @@ export default function FinalEditorPage() {
           <CardHeader className="pb-2">
             <div className="flex items-center justify-between">
               <CardTitle className="text-base">标题</CardTitle>
-              <Badge className="bg-indigo-50 text-indigo-600">可编辑</Badge>
+              <Badge className="bg-blue-50 text-blue-600">可编辑</Badge>
             </div>
           </CardHeader>
           <CardContent>
@@ -244,9 +252,13 @@ export default function FinalEditorPage() {
           <div className="text-sm text-slate-600">{saveMessage}</div>
         )}
 
-        <div className="flex flex-wrap gap-2 justify-end">
-          <Button className="bg-emerald-600 hover:bg-emerald-700 text-white" onClick={saveFinalDraft} disabled={saveLoading}>
-            <FileText className="h-4 w-4 mr-2" />
+        <div className="flex flex-wrap gap-2.5 justify-end">
+          <Button
+            className="h-10 rounded-xl bg-blue-600 px-5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+            onClick={saveFinalDraft}
+            disabled={saveLoading}
+          >
+            <FileText className="mr-2 h-4 w-4" />
             {saveLoading ? "保存中..." : "保存最终文案"}
           </Button>
         </div>

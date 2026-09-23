@@ -1,12 +1,12 @@
 import { useState, type ComponentType } from "react";
 import { useNavigate } from "react-router";
 import {
-  ArrowLeft,
   ArrowRight,
   CheckCircle2,
   Clapperboard,
   FileStack,
   Hourglass,
+  Info,
   Layers3,
   LibraryBig,
   ListChecks,
@@ -14,9 +14,7 @@ import {
   Sparkles,
   UsersRound,
 } from "lucide-react";
-import { useAuth } from "./auth";
-import { BenchmarkClassificationStage } from "./BenchmarkClassificationStage";
-import { GoldThreeSecondsStage } from "./GoldThreeSecondsStage";
+import { BenchmarkClassificationStage } from "./BenchmarkClassificationStage";import { GoldThreeSecondsStage } from "./GoldThreeSecondsStage";
 import { EndingHooksStage } from "./EndingHooksStage";
 import { BenchmarkProfileStage } from "./BenchmarkProfileStage";
 import { AccountPlanStage } from "./AccountPlanStage";
@@ -75,6 +73,28 @@ const stepStatus = (step: { available: boolean }, isActive: boolean, isCompleted
   return { label: "待实现", className: "bg-amber-100 text-amber-700" };
 };
 
+/**
+ * 前置依赖 —— 只提示，不拦截。
+ *
+ * 这条流程本来就有业务顺序（2.1 出报告 → 2.2/2.3/2.4 才有输入；1.2 复用模块 3 的
+ * 产出；1.3 要 1.2 的报告），但界面上只有一个中性的「可进入」，用户点进去才发现
+ * 没东西可选，只能自己猜顺序。
+ *
+ * 这里如实把「还差哪一步」写出来。**不做禁用**：报告也可能通过 handoff 直接从上一步
+ * 带过来，硬拦会挡住本来能跑的通路。
+ */
+const PREREQUISITES: Record<string, Array<{ id: string; label: string }>> = {
+  gold: [{ id: "classification", label: "2.1 对标账号分类分析" }],
+  ending: [{ id: "classification", label: "2.1 对标账号分类分析" }],
+  library: [{ id: "classification", label: "2.1 对标账号分类分析" }],
+  [BENCHMARK_ANALYSIS_MODULE_ID]: [{ id: "classification", label: "2.1 对标账号分类分析" }],
+  [ACCOUNT_PLAN_MODULE_ID]: [{ id: BENCHMARK_ANALYSIS_MODULE_ID, label: "1.2 对标账号分析" }],
+};
+
+/** 返回还没完成的前置步骤名；全部满足时返回空数组。 */
+const pendingPrerequisites = (id: string, completedIds: string[]) =>
+  (PREREQUISITES[id] || []).filter(item => !completedIds.includes(item.id)).map(item => item.label);
+
 type PanelContent = {
   code: string;
   title: string;
@@ -110,7 +130,6 @@ function NotImplementedPanel({ code, title, summary, inputs, outputs, hint }: Pa
 
 export default function AccountPositioningPage() {
   const navigate = useNavigate();
-  const { user, logout } = useAuth();
   const [activeModuleId, setActiveModuleId] = useStageDraft<ModuleId>("pipeline.activeModuleId", TOPIC_LIBRARY_MODULE_ID);
   const [activeStepId, setActiveStepId] = useStageDraft<StepId>("pipeline.activeStepId", "classification");
   // 沿用原来的 key，这样已经标过「已完成」的步骤不会因为这次改版被清掉。
@@ -136,11 +155,6 @@ export default function AccountPositioningPage() {
   const openStep = (stepId: StepId) => {
     setActiveModuleId(TOPIC_LIBRARY_MODULE_ID);
     setActiveStepId(stepId);
-  };
-
-  const handleLogout = async () => {
-    await logout();
-    navigate("/login", { replace: true });
   };
 
   const handleClassificationSaved = (item: SavedBenchmarkReport) => {
@@ -225,29 +239,26 @@ export default function AccountPositioningPage() {
   };
 
   return (
-    <main className="min-h-screen bg-[#f5f7fb] text-slate-900">
-      <div className="mx-auto max-w-[1500px] px-5 py-6 sm:px-8 lg:px-10 lg:py-9">
-        <header className="flex flex-col gap-5 border-b border-slate-200/80 pb-7 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <button type="button" onClick={() => navigate("/manager")} className="mb-5 inline-flex items-center gap-2 text-sm font-medium text-slate-500 transition hover:text-slate-900"><ArrowLeft className="h-4 w-4" />返回项目经理工作台</button>
-            <div className="flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600"><span className="h-2 w-2 rounded-full bg-blue-600" /> ACCOUNT POSITIONING</div>
-            <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950 sm:text-4xl">账号定位</h1>
-          </div>
-          <div className="flex items-center gap-3 self-start sm:self-auto">
-            <div className="hidden text-right sm:block"><div className="text-sm font-medium text-slate-800">{user?.name || user?.email || "项目经理"}</div><div className="mt-1 text-xs text-slate-400">项目经理账号</div></div>
-            <button type="button" onClick={handleLogout} className="rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-sm text-slate-500 transition hover:border-slate-300 hover:text-slate-900">退出登录</button>
-          </div>
-        </header>
+    <div>
+      {/* 与「任务 / 客户档案 / 团队成员」同一套页头：大标题 + 灰色副标题。
+          原来这里有一行蓝紫大写英文（ACCOUNT POSITIONING）压在标题上方，
+          经理端内部两种页头混用，看着像两个系统，故去掉。 */}
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">账号定位</h1>
+          <div className="page-subtitle max-w-3xl">从客户 IP 档案出发的一条完整流程：先用对标账号产出选题库，再综合成账号定位规划。各阶段各自保存报告，按顺序往下走即可。</div>
+        </div>
+      </div>
 
-        <section className="mt-6 flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+        <section className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm sm:flex-row sm:items-center sm:justify-between">
           <div className="flex items-start gap-3">
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-slate-500"><FileStack className="h-4 w-4" /></span>
             <div>
-              <div className="text-sm font-semibold text-slate-900">流程起点：外部客户 / IP 档案</div>
-              <p className="mt-1 text-xs leading-5 text-slate-500">客户与 IP 档案在管理端另一个项目中录入（写入同一套线上 MongoDB），本流程直接沿用，不需要在这里重复填写。</p>
+              <div className="text-sm font-semibold text-slate-900">流程起点：客户 IP 档案</div>
+              <p className="mt-1 text-xs leading-5 text-slate-500">这条流程以客户已确认的 IP 档案为起点。档案在「客户与 IP 档案」里维护，本流程直接沿用，不需要在这里重复填写。</p>
             </div>
           </div>
-          <span className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-full bg-slate-100 px-3 py-1.5 text-xs font-medium text-slate-600 sm:self-auto"><CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />已在另一项目完成</span>
+          <button type="button" onClick={() => navigate("/manager/customers")} className="inline-flex shrink-0 items-center gap-1.5 self-start rounded-xl border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-600 transition hover:border-blue-300 hover:text-blue-700 sm:self-auto"><CheckCircle2 className="h-3.5 w-3.5" />管理客户档案<ArrowRight className="h-3.5 w-3.5" /></button>
         </section>
 
         <nav aria-label="账号定位模块" className="mt-6">
@@ -256,6 +267,7 @@ export default function AccountPositioningPage() {
               const isActive = module.id === activeModule.id;
               const chip = moduleStatus(module, completedIds);
               const Icon = MODULE_ICONS[module.id];
+              const pending = pendingPrerequisites(module.id, completedIds);
               return (
                 <button
                   key={module.id}
@@ -274,6 +286,9 @@ export default function AccountPositioningPage() {
                   </div>
                   <p className="mt-2 text-xs leading-5 text-slate-500">{module.summary}</p>
                   {module.reuses && <p className="mt-2 text-[11px] leading-4 text-slate-400">{module.reuses}</p>}
+                  {pending.length > 0 && (
+                    <p className="mt-2 inline-flex items-start gap-1 text-[11px] leading-4 text-amber-600"><Info className="mt-0.5 h-3 w-3 shrink-0" />建议先完成：{pending.join("、")}</p>
+                  )}
                 </button>
               );
             })}
@@ -292,6 +307,7 @@ export default function AccountPositioningPage() {
                 const isCompleted = completedIds.includes(step.id);
                 const chip = stepStatus(step, isActive, isCompleted);
                 const Icon = STEP_ICONS[step.id];
+                const pending = pendingPrerequisites(step.id, completedIds);
                 return (
                   <button
                     key={step.id}
@@ -309,6 +325,9 @@ export default function AccountPositioningPage() {
                       <span className="text-xs font-semibold text-slate-900">{step.title}</span>
                     </div>
                     {step.id === "library" && <p className="mt-2 text-xs leading-5 text-slate-500">{step.summary}</p>}
+                    {pending.length > 0 && (
+                      <p className="mt-2 inline-flex items-start gap-1 text-[11px] leading-4 text-amber-600"><Info className="mt-0.5 h-3 w-3 shrink-0" />建议先完成：{pending.join("、")}</p>
+                    )}
                   </button>
                 );
               })}
@@ -317,7 +336,6 @@ export default function AccountPositioningPage() {
         )}
 
         <div className="mt-7">{renderBody()}</div>
-      </div>
-    </main>
+    </div>
   );
 }

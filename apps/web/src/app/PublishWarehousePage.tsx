@@ -520,28 +520,43 @@ export default function PublishWarehousePage() {
   const confirmedAccountTagList = Object.values(accountConfirmed).filter(Boolean);
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="border-b border-slate-200 bg-white px-8 py-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h1 className="text-2xl font-semibold text-slate-900">发布仓</h1>
-            <p className="mt-1 text-sm text-slate-500">
-              为每条选题确认封面、发布文案与发布标签，然后核查并导出。这是本轮的最后一个步骤。
-            </p>
+    <div className="min-h-screen bg-[#f5f7fb]">
+      <header className="border-b border-slate-200/80 bg-white/80 px-5 py-6 backdrop-blur sm:px-8 lg:px-10">
+        <div className="mx-auto max-w-[1500px]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
+                <span className="h-2 w-2 rounded-full bg-blue-600" />
+                PUBLISH WAREHOUSE
+              </div>
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-950">发布仓</h1>
+              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
+                为每条选题确认封面、发布文案与发布标签，然后核查并导出。这是本轮的最后一个步骤。
+              </p>
+            </div>
+            <div className="flex items-center gap-2.5">
+              <Button
+                variant="outline"
+                className="h-10 rounded-xl border-slate-200 bg-white text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
+                onClick={() => navigate("/content")}
+              >
+                返回内容生成
+              </Button>
+              <Button
+                className="h-10 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
+                onClick={goToFinalEditor}
+              >
+                进入最终文案编辑页
+              </Button>
+            </div>
           </div>
-          <div className="flex items-center gap-3">
-            <Button variant="outline" onClick={() => navigate("/content")}>返回内容生成</Button>
-            <Button className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={goToFinalEditor}>
-              进入最终文案编辑页
-            </Button>
-          </div>
+          {!customerId && (
+            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
+              没有读到客户信息（`contentCustomerId` 为空）。发布仓的标签与封面都依赖客户选题库，
+              请从「今日选题」正常进入。
+            </div>
+          )}
         </div>
-        {!customerId && (
-          <div className="mt-4 rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
-            没有读到客户信息（`contentCustomerId` 为空）。发布仓的标签与封面都依赖客户选题库，
-            请从「今日选题」正常进入。
-          </div>
-        )}
       </header>
 
       <main className="mx-auto max-w-[1500px] px-5 py-6 sm:px-8 lg:px-10">
@@ -581,7 +596,7 @@ export default function PublishWarehousePage() {
                 }}
                 className={`max-w-[280px] truncate rounded-xl border px-3 py-2 text-left text-xs transition ${
                   index === activeTopicIndex
-                    ? "border-indigo-400 bg-indigo-50 text-indigo-700"
+                    ? "border-blue-400 bg-blue-50 text-blue-700"
                     : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                 }`}
               >
@@ -599,10 +614,10 @@ export default function PublishWarehousePage() {
               type="button"
               onClick={() => setActiveTab(tab.id)}
               className={`rounded-xl border px-4 py-2.5 text-left text-sm transition ${
-                activeTab === tab.id ? "border-indigo-400 bg-indigo-50" : "border-slate-200 bg-white hover:border-slate-300"
+                activeTab === tab.id ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
               }`}
             >
-              <div className={`font-semibold ${activeTab === tab.id ? "text-indigo-700" : "text-slate-800"}`}>{tab.label}</div>
+              <div className={`font-semibold ${activeTab === tab.id ? "text-blue-700" : "text-slate-800"}`}>{tab.label}</div>
               <div className="mt-0.5 text-xs text-slate-400">{tab.hint}</div>
             </button>
           ))}
@@ -617,7 +632,7 @@ export default function PublishWarehousePage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <Button
-                  className="w-full bg-slate-950 text-white hover:bg-slate-800"
+                  className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
                   disabled={coverLoading || !activeTopic}
                   onClick={() => loadCoverPlan(activeTopic)}
                 >
@@ -661,7 +676,7 @@ export default function PublishWarehousePage() {
                 </div>
 
                 <Button
-                  className="w-full bg-indigo-600 text-white hover:bg-indigo-700"
+                  className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
                   disabled={Boolean(coverImageLoading) || !coverPromptDraft.trim()}
                   onClick={() => makeCoverImage(coverPromptDraft, `封面 ${coverCandidates.length + 1}`, [])}
                 >
@@ -718,7 +733,7 @@ export default function PublishWarehousePage() {
                       return (
                         <div
                           key={candidate.id}
-                          className={`overflow-hidden rounded-xl border transition ${isSelected ? "border-indigo-400 ring-2 ring-indigo-200" : "border-slate-200"}`}
+                          className={`overflow-hidden rounded-xl border transition ${isSelected ? "border-blue-400 ring-2 ring-blue-200" : "border-slate-200"}`}
                         >
                           <button
                             type="button"
@@ -750,7 +765,7 @@ export default function PublishWarehousePage() {
                           </button>
                           <div className="flex items-center justify-between gap-2 px-2.5 py-2">
                             <span className="truncate text-xs text-slate-600">{candidate.title}</span>
-                            {isSelected && <Badge className="bg-indigo-50 text-indigo-600 hover:bg-indigo-50">已选</Badge>}
+                            {isSelected && <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">已选</Badge>}
                           </div>
                         </div>
                       );
@@ -794,7 +809,7 @@ export default function PublishWarehousePage() {
                 <div key={item.kind} className="rounded-xl border border-slate-200 px-4 py-3">
                   <div className="flex items-center gap-2">
                     <span className="text-sm font-semibold text-slate-800">{item.label}</span>
-                    <Badge className={item.source === "reuse" ? "bg-slate-100 text-slate-600 hover:bg-slate-100" : "bg-indigo-50 text-indigo-600 hover:bg-indigo-50"}>
+                    <Badge className={item.source === "reuse" ? "bg-slate-100 text-slate-600 hover:bg-slate-100" : "bg-blue-50 text-blue-600 hover:bg-blue-50"}>
                       {item.source === "reuse" ? "复用已有" : "AI 生成"}
                     </Badge>
                     {item.options.length === 0 && <span className="text-xs text-amber-600">这一类没有生成出内容</span>}
@@ -815,7 +830,7 @@ export default function PublishWarehousePage() {
                             });
                           }}
                           className={`block w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                            checked ? "border-indigo-400 bg-indigo-50 text-indigo-800" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                            checked ? "border-blue-400 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
                           }`}
                         >
                           {option}
@@ -860,7 +875,7 @@ export default function PublishWarehousePage() {
                             onClick={() => setAccountConfirmed(prev => ({ ...prev, [angle.key]: candidate }))}
                             className={`rounded-lg border px-3 py-1.5 text-xs transition ${
                               accountConfirmed[angle.key] === candidate
-                                ? "border-indigo-400 bg-indigo-50 text-indigo-700"
+                                ? "border-blue-400 bg-blue-50 text-blue-700"
                                 : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                             }`}
                           >
@@ -874,7 +889,11 @@ export default function PublishWarehousePage() {
                     </div>
                   );
                 })}
-                <Button className="w-full bg-slate-950 text-white hover:bg-slate-800" onClick={confirmAccountTags} disabled={!accountTags}>
+                <Button
+                  className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                  onClick={confirmAccountTags}
+                  disabled={!accountTags}
+                >
                   确认并保存账号标签
                 </Button>
                 {confirmedAccountTagList.length > 0 && (
@@ -921,7 +940,7 @@ export default function PublishWarehousePage() {
                               topicTags: { groups: tagGroups, selected: toggle(tagSelected, tag), missing: activeSelection?.topicTags?.missing || [] },
                             })}
                             className={`rounded-lg border px-3 py-1.5 text-xs transition ${
-                              checked ? "border-indigo-400 bg-indigo-50 text-indigo-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                              checked ? "border-blue-400 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                             }`}
                           >
                             {tag}
@@ -964,7 +983,7 @@ export default function PublishWarehousePage() {
             </div>
 
             <div className="flex flex-wrap gap-2">
-              <Button className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={goToFinalEditor}>
+              <Button className="bg-blue-600 text-white hover:bg-blue-700" onClick={goToFinalEditor}>
                 进入最终文案编辑页
               </Button>
               <Button variant="outline" disabled={exporting === "feishu"} onClick={() => exportAll("feishu")}>
@@ -1001,7 +1020,10 @@ export default function PublishWarehousePage() {
               </div>
             </div>
 
-            <Button className="w-full bg-emerald-600 text-white hover:bg-emerald-700" onClick={confirmComplete}>
+            <Button
+              className="h-11 w-full rounded-xl bg-emerald-600 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-600/40 disabled:opacity-70"
+              onClick={confirmComplete}
+            >
               确认无误（结束本次任务）
             </Button>
             {taskCompleteVisible && (

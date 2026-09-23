@@ -6,6 +6,7 @@ dist/
 .DS_Store
 .codegraph/
 .preview-shots/
+.workbuddy/
 *.log
 apps/server/src/data/
 backups/

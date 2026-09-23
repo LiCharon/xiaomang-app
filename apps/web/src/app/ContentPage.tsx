@@ -1809,18 +1809,22 @@ export default function ContentPage() {
   }, [workflowInputs, workflowInputIds, workflowGroups]);
 
   return (
-    <div className="min-h-screen bg-slate-50">
-      <header className="bg-white border-b border-slate-200 px-8 py-6">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <div className="min-h-screen bg-[#f5f7fb]">
+      <header className="border-b border-slate-200/80 bg-white/80 px-5 py-6 backdrop-blur sm:px-8 lg:px-10">
+        <div className="mx-auto flex max-w-[1500px] flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-slate-900">内容生成与确认</h1>
-            <p className="text-sm text-slate-500 mt-1">
+            <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
+              <span className="h-2 w-2 rounded-full bg-blue-600" />
+              CONTENT STUDIO
+            </div>
+            <h1 className="text-3xl font-semibold tracking-tight text-slate-950">内容生成与确认</h1>
+            <p className="mt-2 text-sm leading-6 text-slate-500">
               系统已生成多组内容方案，请逐步筛选并确认最终文案
             </p>
           </div>
           <Button
             variant="outline"
-            className="border-slate-200 text-slate-600 hover:text-slate-800"
+            className="h-10 rounded-xl border-slate-200 bg-white text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
             onClick={() => {
               window.location.href = "/";
             }}
@@ -1830,7 +1834,7 @@ export default function ContentPage() {
         </div>
       </header>
 
-      <div className="p-8 max-w-[1600px] mx-auto">
+      <div className="mx-auto max-w-[1500px] px-5 py-6 sm:px-8 lg:px-10 lg:py-8">
         <div className="grid grid-cols-1 xl:grid-cols-[320px_1fr] gap-6">
           <div className="space-y-4">
             <Accordion type="multiple" defaultValue={["context-1", "context-2"]} className="space-y-3">
@@ -1895,7 +1899,7 @@ export default function ContentPage() {
                 <Button
                   onClick={() => runWorkflow({ force: true })}
                   disabled={workflowLoading || workflowInputs.length === 0}
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                  className="bg-blue-600 hover:bg-blue-700 text-white"
                 >
                   {workflowLoading ? (
                     <>
@@ -1992,7 +1996,7 @@ export default function ContentPage() {
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base font-semibold text-slate-900">标题</CardTitle>
-                    <Badge className="bg-indigo-50 text-indigo-600">{funnelStatus.titleCount} 已选</Badge>
+                    <Badge className="bg-blue-50 text-blue-600">{funnelStatus.titleCount} 已选</Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-2 flex-1 min-h-0 overflow-auto pr-1">
@@ -2003,7 +2007,7 @@ export default function ContentPage() {
                         key={titleBlock}
                         className={`rounded-lg border px-3 py-2 text-sm transition ${
                           selectedTitles.includes(titleBlock)
-                            ? "border-indigo-400 bg-indigo-50"
+                            ? "border-blue-400 bg-blue-50"
                             : "border-slate-200 bg-white"
                         }`}
                       >
@@ -2020,7 +2024,7 @@ export default function ContentPage() {
                               </div>
                             )}
                             {selectedTitles.includes(titleBlock) && (
-                              <div className="text-xs text-indigo-600 mt-1">已选为候选标题</div>
+                              <div className="text-xs text-blue-600 mt-1">已选为候选标题</div>
                             )}
                           </div>
                         </div>
@@ -2034,7 +2038,7 @@ export default function ContentPage() {
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base font-semibold text-slate-900">3 秒留存</CardTitle>
-                    <Badge className="bg-indigo-50 text-indigo-600">{funnelStatus.hookCount} 已选</Badge>
+                    <Badge className="bg-blue-50 text-blue-600">{funnelStatus.hookCount} 已选</Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-2 flex-1 min-h-0 overflow-auto pr-1">
@@ -2051,7 +2055,7 @@ export default function ContentPage() {
                         key={hook.id}
                         className={`rounded-lg border px-3 py-3 text-sm transition ${
                           isSelected
-                            ? "border-indigo-400 bg-indigo-50"
+                            ? "border-blue-400 bg-blue-50"
                             : "border-slate-200 bg-white"
                         }`}
                       >
@@ -2067,14 +2071,14 @@ export default function ContentPage() {
                                   （如「求知欲」「引导互动」）—— 这就是「10 条按配比分配」
                                   在界面上的落地证据，不能只存不显示。 */}
                               {hook.hookTypeLabel && (
-                                <Badge className="bg-indigo-50 text-indigo-600 hover:bg-indigo-50">{hook.hookTypeLabel}</Badge>
+                                <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">{hook.hookTypeLabel}</Badge>
                               )}
                             </div>
                             <div className="text-slate-900 whitespace-pre-wrap break-words leading-6">
                               {hook.content}
                             </div>
                             {isSelected && (
-                              <div className="text-xs text-indigo-600 mt-1">已进入下一筛选阶段</div>
+                              <div className="text-xs text-blue-600 mt-1">已进入下一筛选阶段</div>
                             )}
                           </div>
                         </div>
@@ -2088,7 +2092,7 @@ export default function ContentPage() {
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base font-semibold text-slate-900">二创文案</CardTitle>
-                    <Badge className="bg-indigo-50 text-indigo-600">{funnelStatus.scriptCount} 已选</Badge>
+                    <Badge className="bg-blue-50 text-blue-600">{funnelStatus.scriptCount} 已选</Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-3 flex-1 min-h-0 overflow-auto pr-1">
@@ -2097,7 +2101,7 @@ export default function ContentPage() {
                       key={script.id}
                       className={`rounded-lg border ${
                         selectedScripts.includes(script.id)
-                          ? "border-indigo-400 bg-indigo-50"
+                          ? "border-blue-400 bg-blue-50"
                           : "border-slate-200 bg-white"
                       }`}
                     >
@@ -2120,7 +2124,7 @@ export default function ContentPage() {
                             打开大窗口阅读全文
                           </Button>
                           {selectedScripts.includes(script.id) && (
-                            <div className="mt-2 text-xs text-indigo-600">已进入最终组合</div>
+                            <div className="mt-2 text-xs text-blue-600">已进入最终组合</div>
                           )}
                         </div>
                       </label>
@@ -2137,7 +2141,7 @@ export default function ContentPage() {
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <Layers className="h-4 w-4 text-indigo-500" />
+                      <Layers className="h-4 w-4 text-blue-500" />
                       <CardTitle className="text-base font-semibold text-slate-900">中 / 英翻译（可选）</CardTitle>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2158,7 +2162,7 @@ export default function ContentPage() {
                           onClick={runTranslationWorkflow}
                           disabled={translationLoading}
                           variant="outline"
-                          className="border-indigo-200 text-indigo-700"
+                          className="border-blue-200 text-blue-700"
                         >
                           {translationLoading ? "翻译中..." : "执行翻译"}
                         </Button>
@@ -2248,7 +2252,7 @@ export default function ContentPage() {
                 <CardHeader className="pb-3">
                   <div className="flex items-center justify-between gap-3">
                     <div className="flex items-center gap-2">
-                      <Sparkles className="h-4 w-4 text-indigo-500" />
+                      <Sparkles className="h-4 w-4 text-blue-500" />
                       <CardTitle className="text-base font-semibold text-slate-900">文案风格转写（可选）</CardTitle>
                     </div>
                     <div className="flex items-center gap-2">
@@ -2274,7 +2278,7 @@ export default function ContentPage() {
                             key={item.id}
                             type="button"
                             variant={rewriteTarget === item.id ? "default" : "outline"}
-                            className={rewriteTarget === item.id ? "bg-indigo-600 hover:bg-indigo-700" : ""}
+                            className={rewriteTarget === item.id ? "bg-blue-600 hover:bg-blue-700" : ""}
                             onClick={() => setRewriteTarget(item.id as RewritePlatform)}
                           >
                             {item.label}
@@ -2290,7 +2294,7 @@ export default function ContentPage() {
                             .map(script => {
                               const checked = rewriteSelection.includes(script.id);
                               return (
-                                <label key={script.id} className={`flex items-start gap-2 rounded-md border px-2 py-2 ${checked ? "border-indigo-300 bg-indigo-50" : "border-slate-200"}`}>
+                                <label key={script.id} className={`flex items-start gap-2 rounded-md border px-2 py-2 ${checked ? "border-blue-300 bg-blue-50" : "border-slate-200"}`}>
                                   <Checkbox
                                     checked={checked}
                                     onCheckedChange={() => toggleSelection(script.id, rewriteSelection, setRewriteSelection)}
@@ -2312,7 +2316,7 @@ export default function ContentPage() {
                           onClick={runRewriteWorkflow}
                           disabled={rewriteLoading}
                           variant="outline"
-                          className="border-indigo-200 text-indigo-700"
+                          className="border-blue-200 text-blue-700"
                         >
                           {rewriteLoading ? "转写中..." : "执行平台转写"}
                         </Button>
@@ -2365,7 +2369,7 @@ export default function ContentPage() {
               <CardHeader className="pb-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-indigo-500" />
+                    <FileText className="h-4 w-4 text-blue-500" />
                     <CardTitle className="text-base font-semibold text-slate-900">最终文案（可编辑）</CardTitle>
                   </div>
                   <Badge className="bg-emerald-50 text-emerald-600">{pendingDraftCount} 份待导出</Badge>
@@ -2377,7 +2381,7 @@ export default function ContentPage() {
                   核查、写入飞书文档 / 多维表格与导出也都已经挪到那边（它才是本轮的最后一个步骤）。
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button className="bg-indigo-600 hover:bg-indigo-700 text-white" onClick={goToPublishWarehouse}>
+                  <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={goToPublishWarehouse}>
                     下一步：进入发布仓
                   </Button>
                   <Button type="button" variant="outline" className="border-slate-300 text-slate-600" onClick={goToFinalEditor}>
@@ -2394,9 +2398,9 @@ export default function ContentPage() {
         </div>
       </div>
 
-      <div className="border-t border-slate-200 bg-white px-8 py-6">
-        <div className="mx-auto flex max-w-[1600px] justify-end">
-          <Button className="bg-indigo-600 text-white hover:bg-indigo-700" onClick={goToPublishWarehouse}>
+      <div className="border-t border-slate-200/80 bg-white/90 px-5 py-4 backdrop-blur sm:px-8 lg:px-10">
+        <div className="mx-auto flex max-w-[1500px] justify-end">
+          <Button className="h-10 rounded-xl bg-blue-600 px-6 text-sm font-semibold text-white shadow-sm hover:bg-blue-700" onClick={goToPublishWarehouse}>
             下一步：进入发布仓
           </Button>
         </div>
@@ -2427,7 +2431,7 @@ export default function ContentPage() {
         <div className="fixed inset-0 z-[70] bg-slate-900/35 backdrop-blur-[2px] flex items-center justify-center p-4">
           <div className="relative w-full max-w-md rounded-2xl border border-emerald-200 bg-white shadow-2xl px-8 py-10 text-center overflow-hidden">
             <div className="absolute -top-10 -right-10 w-32 h-32 rounded-full bg-emerald-100/70" />
-            <div className="absolute -bottom-12 -left-12 w-40 h-40 rounded-full bg-indigo-100/60" />
+            <div className="absolute -bottom-12 -left-12 w-40 h-40 rounded-full bg-blue-100/60" />
             <div className="relative">
               <div className="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-emerald-100 text-emerald-600 animate-pulse">
                 <CheckCircle2 className="h-8 w-8" />
@@ -2474,7 +2478,7 @@ export default function ContentPage() {
               </div>
               <div>
                 <div className="text-xs text-slate-500 mb-1">翻译结果</div>
-                <pre className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-900 font-sans rounded-md border border-indigo-200 p-3 bg-indigo-50">
+                <pre className="whitespace-pre-wrap break-words text-sm leading-7 text-slate-900 font-sans rounded-md border border-blue-200 p-3 bg-blue-50">
                   {activeTranslationItem.translated || activeTranslationItem.en || ""}
                 </pre>
               </div>

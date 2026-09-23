@@ -1,6 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router';
+import { TriangleAlert } from 'lucide-react';
 import { taskAPI, employeeAPI, customerAPI } from '../services/api';
+import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 
 function splitContentRequirements(value) {
   return [...new Set(String(value || '')
@@ -68,6 +70,7 @@ function TaskForm() {
   const [customerLoadError, setCustomerLoadError] = useState('');
   const [errors, setErrors] = useState({});
   const [profilePreviewOpen, setProfilePreviewOpen] = useState(false);
+  const [confirmUnconfirmed, setConfirmUnconfirmed] = useState(false);
 
   const [formData, setFormData] = useState({
     customerId: '',
@@ -118,6 +121,11 @@ function TaskForm() {
 
   const selectedCustomer = customers.find((customer) => customer._id === formData.customerId);
   const selectedProfileSummary = selectedCustomer?.ipProfileSummary;
+  // 文本框里写的是「逗号/换行分隔」的多个标签，这里实时解析出来给用户看，避免写完不知道会被切成什么。
+  const requirementTags = useMemo(
+    () => splitContentRequirements(formData.contentRequirementsText),
+    [formData.contentRequirementsText],
+  );
 
   const handleChange = (event) => {
     const { name, value } = event.target;
@@ -152,10 +160,19 @@ function TaskForm() {
       setErrors(nextErrors);
       return;
     }
+    // 档案没确认不硬拦（业务上确实可能有「先建任务、回头补档案」的情况），但要用户
+    // 明确知道自己在建一条基于未确认档案的任务。
+    if (selectedProfileSummary?.status !== 'confirmed') {
+      setConfirmUnconfirmed(true);
+      return;
+    }
+    await submitTask();
+  };
 
+  const submitTask = async () => {
     try {
       setLoading(true);
-      await taskAPI.create({
+      const created = await taskAPI.create({
         customerId: formData.customerId,
         useCustomerProfile: true,
         ownerId: formData.ownerId,
@@ -169,10 +186,18 @@ function TaskForm() {
           end: combineLocalDateTime(formData.collaborationEndDate, formData.collaborationEndTime)
         }
       });
-      navigate('/manager/tasks');
+      // 回列表页时明确告诉他建成了什么，而不是默默跳走后什么都不说。
+      const ownerName = employees.find(item => item._id === formData.ownerId)?.name;
+      const customerName = selectedCustomer?.name;
+      navigate('/manager/tasks', {
+        state: {
+          message: `已创建任务：${customerName || '客户'} · ${formData.platformName}${ownerName ? ` · 负责人 ${ownerName}` : ''}`
+        }
+      });
+      return created;
     } catch (error) {
       console.error('创建任务失败:', error);
-      setErrors({ _general: '创建任务失败，请重试' });
+      setErrors({ _general: error?.response?.data?.error || '创建任务失败，请重试' });
     } finally {
       setLoading(false);
     }
@@ -180,6 +205,19 @@ function TaskForm() {
 
   return (
     <div className="task-form-page">
+      {/* 其余经理端页面都有统一的 page-header，这一页原来直接就是两张卡，进去像掉进了表单里。 */}
+      <div className="page-header">
+        <div>
+          <h1 className="page-title">新建任务</h1>
+          <div className="page-subtitle">选择客户档案与负责人，指派一条内容生产任务</div>
+        </div>
+        <div>
+          <button type="button" className="btn btn-secondary" onClick={() => navigate('/manager/tasks')}>
+            返回任务列表
+          </button>
+        </div>
+      </div>
+
       {errors._general && <div className="error-message">{errors._general}</div>}
 
       <form className="task-form-grid" onSubmit={handleSubmit} noValidate>
@@ -231,6 +269,18 @@ function TaskForm() {
                     预览档案
                   </button>
                 </div>
+                {/* 任务创建时会把 IP 档案快照写进任务（useCustomerProfile），所以档案没确认
+                    就建任务，员工拿到的是一份不完整的输入。这里提前说清楚，并在提交前再确认一次。 */}
+                {selectedProfileSummary?.status !== 'confirmed' && (
+                  <div className="task-profile-warning">
+                    <TriangleAlert className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                    <span>
+                      该客户的 IP 档案{selectedProfileSummary?.status === 'needs_review' ? '还在待确认' : '尚未完成'}，
+                      创建任务时会写入当前这份未确认的档案，员工看到的内容需求可能不完整。
+                      <button type="button" className="ml-1 font-semibold underline" onClick={() => setProfilePreviewOpen(true)}>先看看档案 →</button>
+                    </span>
+                  </div>
+                )}
               </div>
             )}
 
@@ -245,6 +295,21 @@ function TaskForm() {
                 placeholder="如：真实案例、口语化表达、给出可执行建议"
               />
               <div className="form-hint">多个标签可换行或用逗号分隔，最多 8 个。</div>
+              {/* 实时回显「系统最终会存成什么」，避免用户写完不知道标签被怎么切分。 */}
+              {requirementTags.length > 0 && (
+                <div className="task-tag-preview">
+                  <span className="task-tag-preview-label">将存为 {requirementTags.length} 个标签</span>
+                  <div className="task-tag-preview-list">
+                    {requirementTags.map((tag) => (
+                      <span className="task-tag-chip" key={tag}>{tag}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+              {splitContentRequirements(formData.contentRequirementsText).length === 8
+                && String(formData.contentRequirementsText).split(/[\n,，;；]+/).map(i => i.trim()).filter(Boolean).length > 8 && (
+                <div className="form-hint form-hint-warn">只保留前 8 个标签，多余的会被忽略。</div>
+              )}
             </div>
 
             <div className="form-group">
@@ -433,6 +498,19 @@ function TaskForm() {
           </div>
         </>
       )}
+
+      {/* 档案未确认不是错误，但需要用户点一下头，避免「不知道为什么员工拿到的是半份需求」。 */}
+      <ConfirmDialog
+        open={confirmUnconfirmed}
+        onOpenChange={setConfirmUnconfirmed}
+        tone="warning"
+        title="IP 档案尚未确认"
+        description={`「${selectedCustomer?.name || '该客户'}」的 IP 档案${selectedProfileSummary?.status === 'needs_review' ? '还在待确认' : '尚未完成'}。继续创建任务会把当前这份档案快照写进任务，员工看到的内容需求可能不完整。可以先去补档案，也可以照样创建。`}
+        confirmLabel="仍然创建"
+        cancelLabel="先去补档案"
+        loading={loading}
+        onConfirm={submitTask}
+      />
     </div>
   );
 }

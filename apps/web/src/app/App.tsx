@@ -1382,29 +1382,35 @@ export default function App() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-[#f5f7fb] pb-24">
       {/* Header */}
-      <header className="bg-white border-b border-slate-200 px-8 py-6">
-        <h1 className="text-2xl font-semibold text-slate-900">选题生成与选择</h1>
-        <p className="text-sm text-slate-500 mt-1">
-          已导入客户信息与内容需求，系统自动生成运营选题
-        </p>
+      <header className="border-b border-slate-200/80 bg-white/80 px-5 py-6 backdrop-blur sm:px-8 lg:px-10">
+        <div className="mx-auto max-w-[1500px]">
+          <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
+            <span className="h-2 w-2 rounded-full bg-blue-600" />
+            TOPIC WORKBENCH
+          </div>
+          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">选题生成与选择</h1>
+          <p className="mt-2 text-sm leading-6 text-slate-500">
+            已导入客户信息与内容需求，系统自动生成运营选题
+          </p>
+        </div>
       </header>
 
       {/* Main Content */}
-      <div className="p-8 max-w-[1600px] mx-auto">
+      <div className="mx-auto max-w-[1500px] px-5 py-6 sm:px-8 lg:px-10 lg:py-8">
         <div className="grid grid-cols-1 xl:grid-cols-[360px_1fr] gap-6">
           {/* Left Panel - Decision Support Area */}
           <div className="space-y-6">
             <Card className="bg-white border-slate-200 shadow-sm overflow-hidden">
-              <CardHeader className="pb-3 border-b border-slate-100 bg-gradient-to-r from-indigo-50 via-white to-white">
+              <CardHeader className="pb-3 border-b border-slate-100 bg-gradient-to-r from-blue-50 via-white to-white">
                 <div className="flex items-center justify-between">
                   <div>
                     <CardTitle className="text-base font-semibold text-slate-900">客户信息 & 内容需求</CardTitle>
                     <p className="text-xs text-slate-500 mt-1">一个任务对应一个展示面板，左右滑动切换</p>
                   </div>
                   <div className="flex items-center gap-2">
-                    <Badge className="bg-indigo-100 text-indigo-700 border-indigo-200">
+                    <Badge className="bg-blue-100 text-blue-700 border-blue-200">
                       {taskCount > 0 ? `${taskIndex + 1} / ${taskCount}` : "暂无"}
                     </Badge>
                     <div className="flex items-center gap-2">
@@ -1482,7 +1488,7 @@ export default function App() {
 
                                 <div className="rounded-xl border border-slate-200 bg-gradient-to-br from-white to-slate-50 px-4 py-4">
                                   <div className="flex items-center gap-2 text-sm font-semibold text-slate-800">
-                                    <Sparkles className="h-4 w-4 text-indigo-500" />
+                                    <Sparkles className="h-4 w-4 text-blue-500" />
                                     核心客户信息
                                   </div>
                                   <div className="mt-2 space-y-1.5 text-sm text-slate-600 leading-relaxed">
@@ -1510,7 +1516,7 @@ export default function App() {
                                     {requirements.length > 0 ? (
                                       requirements.map((item, index) => (
                                         <div key={`${task._id}-req-${index}`} className="flex items-start gap-3 rounded-lg border border-slate-100 bg-slate-50 px-3 py-2 text-sm text-slate-700">
-                                          <span className="mt-0.5 h-2 w-2 rounded-full bg-indigo-400" />
+                                          <span className="mt-0.5 h-2 w-2 rounded-full bg-blue-400" />
                                           <span>{item}</span>
                                         </div>
                                       ))
@@ -1559,7 +1565,7 @@ export default function App() {
               <CardHeader className="pb-4 border-b border-slate-100">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <Target className="w-5 h-5 text-indigo-600" />
+                    <Target className="w-5 h-5 text-blue-600" />
                     <CardTitle className="text-lg font-medium text-slate-900">批量获取对标作品数据</CardTitle>
                   </div>
                   <div className="text-xs text-slate-500 flex items-center gap-2">
@@ -1584,7 +1590,7 @@ export default function App() {
                       }}
                       className={`rounded-full border px-3 py-1.5 text-xs transition ${
                         sourcePlatform === option.id
-                          ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                          ? "border-blue-500 bg-blue-50 text-blue-700"
                           : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                       }`}
                     >
@@ -1606,7 +1612,7 @@ export default function App() {
                           }}
                           className={`rounded-full border px-3 py-1 text-xs transition ${
                             topicDaysInput === String(days)
-                              ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                              ? "border-blue-500 bg-blue-50 text-blue-700"
                               : "border-slate-200 text-slate-600 hover:border-slate-300"
                           }`}
                         >
@@ -1627,7 +1633,7 @@ export default function App() {
                         setTopicDaysInput(event.target.value);
                         setTopicDaysError(null);
                       }}
-                      className="ml-2 h-8 w-20 rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+                      className="ml-2 h-8 w-20 rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
                     />
                   </label>
                   {topicDaysError && <div className="w-full text-xs text-red-500">{topicDaysError}</div>}
@@ -1645,7 +1651,7 @@ export default function App() {
                       if (sourcePlatform === "wechat_channels") setTikhubError(null);
                     }}
                     placeholder={sourcePlatform === "wechat_channels" ? "每行一个账号名称，例如：人民日报" : sourcePlatform === "tiktok" ? "每行一个 TikTok 主页，例如：https://www.tiktok.com/@username" : "每行一个主页链接"}
-                    className="mt-2 h-32 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100"
+                    className="mt-2 h-32 w-full resize-none rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700 outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
                   />
                   {tikhubError && (
                     <div className="mt-2 text-xs text-red-500">{tikhubError}</div>
@@ -1655,7 +1661,7 @@ export default function App() {
                   <Button
                     onClick={runTikhubFetch}
                     disabled={tikhubLoading}
-                    className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                    className="bg-blue-600 hover:bg-blue-700 text-white"
                   >
                     {tikhubLoading ? "处理中..." : sourcePlatform === "wechat_channels" ? "搜索/获取视频号作品" : "开始获取"}
                   </Button>
@@ -1758,14 +1764,14 @@ export default function App() {
                                   <div
                                     key={`${result.inputName}-${candidate.finderUsername}`}
                                     className={`rounded-lg border px-3 py-3 ${
-                                      isSelected ? "border-indigo-300 bg-indigo-50" : "border-slate-200 bg-slate-50"
+                                      isSelected ? "border-blue-300 bg-blue-50" : "border-slate-200 bg-slate-50"
                                     }`}
                                   >
                                     <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                                       <div className="min-w-0">
                                         <div className="flex items-center gap-2 text-sm font-medium text-slate-900">
                                           {candidate.displayName || result.inputName}
-                                          {isSelected && <CheckCircle2 className="h-4 w-4 text-indigo-600" />}
+                                          {isSelected && <CheckCircle2 className="h-4 w-4 text-blue-600" />}
                                         </div>
                                         <div className="mt-1 break-all text-xs text-slate-500">{candidate.finderUsername}</div>
                                         {candidate.signature && (
@@ -1781,7 +1787,7 @@ export default function App() {
                                         type="button"
                                         size="sm"
                                         onClick={() => confirmWechatCandidate(result.inputName, candidate)}
-                                        className={isSelected ? "bg-slate-700 hover:bg-slate-800 text-white" : "bg-indigo-600 hover:bg-indigo-700 text-white"}
+                                        className={isSelected ? "bg-slate-700 hover:bg-slate-800 text-white" : "bg-blue-600 hover:bg-blue-700 text-white"}
                                       >
                                         {isSelected ? "已选择" : "选择账号"}
                                       </Button>
@@ -1854,9 +1860,9 @@ export default function App() {
               <CardHeader className="pb-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div className="flex items-center gap-2">
-                    <Target className="w-5 h-5 text-indigo-600" />
+                    <Target className="w-5 h-5 text-blue-600" />
                     <CardTitle className="text-lg font-medium text-slate-900">今日选题</CardTitle>
-                    <Badge className="bg-indigo-100 text-indigo-700 ml-2">
+                    <Badge className="bg-blue-100 text-blue-700 ml-2">
                       已合并推荐 + 全部
                     </Badge>
                   </div>
@@ -1899,7 +1905,7 @@ export default function App() {
                         onClick={() => setSortKey(option.key as "comments" | "likes" | "shares" | "bookmarks")}
                         className={`rounded-full border px-3 py-1 text-xs transition ${
                           sortKey === option.key
-                            ? "border-indigo-500 bg-indigo-50 text-indigo-700"
+                            ? "border-blue-500 bg-blue-50 text-blue-700"
                             : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
                         }`}
                       >
@@ -1930,7 +1936,7 @@ export default function App() {
                         {group.label}
                       </span>
                       <span className="flex items-center gap-2 text-xs text-slate-500">
-                        {isOlderGroup && olderTopicsLoading && <LoaderCircle className="h-4 w-4 animate-spin text-indigo-500" />}
+                        {isOlderGroup && olderTopicsLoading && <LoaderCircle className="h-4 w-4 animate-spin text-blue-500" />}
                         {group.topics.length} 条
                       </span>
                     </button>
@@ -1938,7 +1944,7 @@ export default function App() {
                     <div className="space-y-3 border-t border-slate-100 p-3">
                       {olderTopicsLoading && group.topics.length === 0 && (
                         <div className="flex items-center justify-center gap-2 py-6 text-sm text-slate-500">
-                          <LoaderCircle className="h-5 w-5 animate-spin text-indigo-500" />
+                          <LoaderCircle className="h-5 w-5 animate-spin text-blue-500" />
                           正在获取这一时间段的作品…
                         </div>
                       )}
@@ -1962,7 +1968,7 @@ export default function App() {
                           <div
                             className={`rounded-lg border transition-all ${
                               isSelected
-                                ? "bg-indigo-50 border-indigo-300"
+                                ? "bg-blue-50 border-blue-300"
                                 : "bg-slate-50 border-slate-200 hover:border-slate-300"
                             }`}
                           >
@@ -2026,7 +2032,7 @@ export default function App() {
                                   {/* 脚本：默认收起，展开就能看到二创要用的原文。 */}
                                   {topic.content?.script && (
                                     <details className="mb-2">
-                                      <summary className="cursor-pointer text-xs font-medium text-indigo-600 hover:text-indigo-700">
+                                      <summary className="cursor-pointer text-xs font-medium text-blue-600 hover:text-blue-700">
                                         查看脚本（{topic.content.scriptSource === "transcript" ? "真实转写" : "发布文案"}）
                                       </summary>
                                       <div className="mt-2 whitespace-pre-wrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-6 text-slate-700">
@@ -2058,7 +2064,7 @@ export default function App() {
                                 <Button
                                   variant="ghost"
                                   size="sm"
-                                  className="text-indigo-600 hover:text-indigo-700 hover:bg-indigo-50 px-3 h-8 sm:-mr-2"
+                                  className="text-blue-600 hover:text-blue-700 hover:bg-blue-50 px-3 h-8 sm:-mr-2"
                                   disabled={topicLinkLoadingId === topic.id || (!topic.link && (wechatShareLinksLoading || topic.platform !== "wechat_channels"))}
                                   onClick={() => {
                                     if (topic.link) {
@@ -2097,18 +2103,18 @@ export default function App() {
       </div>
 
       {/* Bottom Action Bar */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 px-6 py-4">
-        <div className="max-w-[1600px] mx-auto flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div className="fixed bottom-0 left-0 right-0 z-30 border-t border-slate-200/80 bg-white/90 px-5 py-3.5 backdrop-blur sm:px-8 lg:px-10">
+        <div className="mx-auto flex max-w-[1500px] flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="text-sm text-slate-600">
             已选选题：
-            <span className="ml-2 font-semibold text-slate-900">
+            <span className="ml-2 font-semibold text-slate-950">
               {selectedTopics.length} 个
             </span>
           </div>
           <Button
             onClick={handleSubmit}
             disabled={selectedTopics.length === 0}
-            className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-2 disabled:opacity-50 disabled:cursor-not-allowed"
+            className="h-10 rounded-xl bg-blue-600 px-6 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
           >
             发送（下一步）
           </Button>

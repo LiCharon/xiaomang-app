@@ -12,7 +12,7 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from "./components/ui/accordion";
-import { Loader2, FileText, Layers, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Download, Link2, Plus, Unlink } from "lucide-react";
+import { Loader2, Layers, CheckCircle2, Sparkles, ChevronLeft, ChevronRight, Download, Link2, Plus, Unlink } from "lucide-react";
 import { clearCachedFinalDrafts, readCachedFinalDrafts } from "./finalDraftCache";
 
 type TopicLike = {
@@ -1480,12 +1480,19 @@ export default function ContentPage() {
     }
   };
 
-  const goToFinalEditor = () => {
+  /**
+   * 组装交给最终编辑页的负载（三块勾选 + 改写/翻译结果 + 任务信息）。
+   *
+   * ⚠️ 这份底稿必须在**离开内容生成页时**写好：最终编辑页只读 `finalDraftPayload`，
+   *    而发布仓那一步是在已有 payload 上**追加**封面与标签，不是重建 ——
+   *    底稿缺失时「内容生成页 → 发布仓 → 最终编辑页」会拿到空负载。
+   */
+  const buildFinalDraftPayload = () => {
     const selectedTitleBlocks = workflowResult.titles.filter(item => selectedTitles.includes(item));
     const selectedHookObjects = workflowResult.hooks.filter(item => selectedHooks.includes(item.id));
     const selectedScriptObjects = workflowResult.scripts.filter(item => selectedScripts.includes(item.id));
 
-    const payload = {
+    return {
       selectedTitles: selectedTitleBlocks.map(item => ({
         title: extractTitleLabel(item),
         detail: splitByLine(item).slice(1).join("\n"),
@@ -1508,9 +1515,6 @@ export default function ContentPage() {
       sourceGroupIndex: activeGroupIndex,
       totalGroups: workflowGroups.length,
     };
-
-    sessionStorage.setItem("finalDraftPayload", JSON.stringify(payload));
-    navigate("/final-editor");
   };
 
   /**
@@ -1524,6 +1528,8 @@ export default function ContentPage() {
   const goToPublishWarehouse = () => {
     try {
       sessionStorage.setItem("contentWorkflowGroups", JSON.stringify(workflowGroups));
+      // 发布仓会在最终编辑页的负载上追加封面与标签，所以底稿由这里落盘（见 buildFinalDraftPayload）。
+      sessionStorage.setItem("finalDraftPayload", JSON.stringify(buildFinalDraftPayload()));
     } catch {
       // sessionStorage 不可用时不阻断导航（发布仓会退化成「没有可复用标题」并如实提示）。
     }
@@ -2365,35 +2371,6 @@ export default function ContentPage() {
               </Card>
             </div>
 
-            <Card className="bg-white border-slate-200">
-              <CardHeader className="pb-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2">
-                    <FileText className="h-4 w-4 text-blue-500" />
-                    <CardTitle className="text-base font-semibold text-slate-900">最终文案（可编辑）</CardTitle>
-                  </div>
-                  <Badge className="bg-emerald-50 text-emerald-600">{pendingDraftCount} 份待导出</Badge>
-                </div>
-              </CardHeader>
-              <CardContent className="flex flex-col gap-3 text-sm text-slate-600">
-                <div>
-                  三块内容确认完，下一步进<span className="font-medium text-slate-800">发布仓</span>选封面、发布文案与发布标签；
-                  核查、写入飞书文档 / 多维表格与导出也都已经挪到那边（它才是本轮的最后一个步骤）。
-                </div>
-                <div className="flex flex-wrap gap-2">
-                  <Button className="bg-blue-600 hover:bg-blue-700 text-white" onClick={goToPublishWarehouse}>
-                    下一步：进入发布仓
-                  </Button>
-                  <Button type="button" variant="outline" className="border-slate-300 text-slate-600" onClick={goToFinalEditor}>
-                    直接进入最终文案编辑页
-                  </Button>
-                </div>
-                <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-3 text-xs leading-5 text-slate-500">
-                  写入飞书文档、写入多维表格、确认无误（结束任务）都已移到发布仓 ——
-                  这样「本轮的产出」与「导出动作」在同一屏里，不需要来回切页。
-                </div>
-              </CardContent>
-            </Card>
           </div>
         </div>
       </div>

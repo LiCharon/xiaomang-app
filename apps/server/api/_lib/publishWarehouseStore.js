@@ -1,5 +1,5 @@
 import { MongoClient, ObjectId } from "mongodb";
-import { TITLE_STYLE_DEFAULTS, isCoverTierId } from "./publishWarehouse.js";
+import { TITLE_STYLE_DEFAULTS, isCoverTierId, normalizeCssColor } from "./publishWarehouse.js";
 
 /**
  * 发布仓的持久化 —— 账号标签库 + 每条选题的发布选择。
@@ -258,6 +258,7 @@ const serializeCoverBase = document => ({
   titleStyle: {
     fontFamily: cleanText(document.titleStyle?.fontFamily, 120),
     color: cleanText(document.titleStyle?.color, 60),
+    colorDescription: cleanText(document.titleStyle?.colorDescription, 200),
     position: cleanText(document.titleStyle?.position, 40) || "bottom",
     alignment: cleanText(document.titleStyle?.alignment, 40),
     note: cleanText(document.titleStyle?.note, 300),
@@ -306,6 +307,7 @@ export async function saveCoverBase({ ownerId, customerId, customerName = "", ti
     titleStyle: {
       fontFamily: cleanText(titleStyle?.fontFamily, 120),
       color: cleanText(titleStyle?.color, 60),
+      colorDescription: cleanText(titleStyle?.colorDescription, 200),
       position: cleanText(titleStyle?.position, 40) || "bottom",
       alignment: cleanText(titleStyle?.alignment, 40),
       note: cleanText(titleStyle?.note, 300),
@@ -404,17 +406,35 @@ const normalizeCover = value => {
     })
     .filter(Boolean)
     .slice(0, MAX_COVER_CANDIDATES);
+  // 🔴 颜色：模型给的是自然语言（实测「白色、橙色，无描边或阴影」），直接当 CSS 会被浏览器
+  //    **静默丢弃** —— 不报错，文字只是继承成黑色。这里在**读与写两条路上都**收敛成合法
+  //    CSS 值（serializeSelection 也走这个函数），所以修好之后连老数据也能正常显示；
+  //    模型的原话留下来给界面当 tooltip。
+  const rawColor = cleanText(source.titleStyle?.color, 60);
+  const cssColor = normalizeCssColor(rawColor);
   return {
     /** 用户选中的封面 id（空串 = 还没选）。 */
     selectedId: cleanText(source.selectedId, 80),
     candidates,
     titleStyle: source.titleStyle && typeof source.titleStyle === "object" ? {
       fontFamily: cleanText(source.titleStyle.fontFamily, 120),
-      fontSize: cleanText(source.titleStyle.fontSize, 40),
-      color: cleanText(source.titleStyle.color, 60),
+      color: cssColor,
       position: cleanText(source.titleStyle.position, 40),
       alignment: cleanText(source.titleStyle.alignment, 40),
       note: cleanText(source.titleStyle.note, 300),
+      // 🔴 字号是**数字**（模板参数：基准 / 下限 / 行数上限）。
+      //    只存旧的 `fontSize` 字符串会把它们剥掉 —— 前端读回来就拿不到基准字号，
+      //    叠字只能吃兜底值（实测 48px，在缩略图里大得离谱）。2026-09-23 实测踩到。
+      fontSizePx: Number(source.titleStyle.fontSizePx) > 0 ? Number(source.titleStyle.fontSizePx) : null,
+      minFontSizePx: Number(source.titleStyle.minFontSizePx) > 0 ? Number(source.titleStyle.minFontSizePx) : null,
+      maxLines: Number(source.titleStyle.maxLines) > 0 ? Number(source.titleStyle.maxLines) : null,
+      // 模型对颜色/描边的**原始描述**（例如「白色、橙色，无描边」）。
+      // 它不能当 CSS 用，但用户需要看到，所以单独留一个字段。
+      // 老数据没有这个字段时，把收敛前的原话兜进来，别让信息凭空消失。
+      colorDescription: cleanText(source.titleStyle.colorDescription, 200)
+        || (cssColor === rawColor ? "" : rawColor),
+      // 旧数据里可能只有这个字符串，留着让界面如实显示「待重新识别」。
+      fontSize: cleanText(source.titleStyle.fontSize, 40),
     } : null,
   };
 };

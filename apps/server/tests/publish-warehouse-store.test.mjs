@@ -230,4 +230,40 @@ test("发布仓 store", { skip }, async t => {
     assert.ok(stored.length <= limit, `必须截断到 ${limit} 以内（实际 ${stored.length}）`);
     assert.ok(stored.length > 0, "截断后仍要有内容，不能变成空串");
   });
+
+  await t.test("★ 选题选择里的 titleStyle 必须保住数字字号（回归钉子）", async () => {
+    // 2026-09-23 用户实测的根因：normalizeCover.titleStyle 只认旧的 `fontSize` 字符串，
+    // 新版存的 fontSizePx / minFontSizePx / maxLines 会被**静默剥掉** ——
+    // 前端读回来拿不到基准字号（叠字吃兜底值，缩略图里大得离谱），颜色还是模型的自然语言。
+    const saved = await savePublishSelection({
+      ownerId: OWNER_A,
+      customerId: CUSTOMER,
+      topicId: "topic-titlestyle",
+      cover: {
+        selectedId: "c1",
+        candidates: [{ id: "c1", tier: "standard", image: { dataUrl: "data:image/png;base64,AAAA" } }],
+        titleStyle: {
+          fontFamily: "粗黑体",
+          color: "#ffffff",
+          colorDescription: "白色、橙色，无描边或阴影",
+          position: "top",
+          alignment: "center",
+          note: "分两行",
+          fontSizePx: 80,
+          minFontSizePx: 40,
+          maxLines: 2,
+        },
+      },
+    });
+
+    assert.equal(saved.cover.titleStyle.fontSizePx, 80, "基准字号必须保住");
+    assert.equal(saved.cover.titleStyle.minFontSizePx, 40, "字号下限必须保住");
+    assert.equal(saved.cover.titleStyle.maxLines, 2, "行数上限必须保住");
+    assert.equal(saved.cover.titleStyle.colorDescription, "白色、橙色，无描边或阴影", "模型原话要留着给界面显示");
+    assert.equal(saved.cover.candidates[0].tier, "standard", "候选要记住它是哪一类出的");
+
+    // 读回同一份（走 list → serialize 那条路，而不是复用 save 的返回值）
+    const [readBack] = await listPublishSelections({ ownerId: OWNER_A, customerId: CUSTOMER });
+    assert.equal(readBack.cover.titleStyle.fontSizePx, 80, "读回时数字字号也不能丢");
+  });
 });

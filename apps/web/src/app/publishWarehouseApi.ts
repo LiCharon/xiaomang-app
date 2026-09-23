@@ -142,7 +142,10 @@ export type CoverAnalysis = {
 
 export type TitleStyleTemplate = {
   fontFamily: string;
+  /** **合法 CSS 颜色**（后端把模型的自然语言收敛过了；认不出时是空串）。 */
   color: string;
+  /** 模型对颜色的**原话**（例如「白色、橙色，无描边或阴影」）—— 显示用，不能当 CSS。 */
+  colorDescription?: string;
   position: string;
   alignment: string;
   note: string;
@@ -150,6 +153,8 @@ export type TitleStyleTemplate = {
   fontSizePx: number;
   minFontSizePx: number;
   maxLines: number;
+  /** 旧数据可能只有这个字符串（没有数字字号），界面据此提示「待重新识别」。 */
+  fontSize?: string;
 };
 
 export type ImageRef = { url: string; dataUrl: string };

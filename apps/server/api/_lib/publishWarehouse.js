@@ -223,10 +223,42 @@ export const TITLE_STYLE_DEFAULTS = {
 };
 
 /**
+ * 把模型给的颜色**描述**收敛成一个真正能当 CSS 用的值。
+ *
+ * 🔴 模型回的是自然语言（实测：「白色、橙色，无描边或阴影」）。直接塞进
+ *    `style={{ color }}` 会被浏览器**静默丢弃** —— 不报错，文字只是继承成黑色。
+ *    2026-09-23 用户实测：叠字变成一片大黑字，就是这一条。
+ *
+ * 认不出来的返回空串，让调用方走自己的兜底色，而不是把一个非法值丢给浏览器。
+ */
+const COLOR_WORDS = [
+  [/(白|白色|银白)/, "#ffffff"],
+  [/(黑|黑色|深黑)/, "#111111"],
+  [/(橙|橙色|橘色|橘黄)/, "#ff8a00"],
+  [/(金色|金黄|黄|黄色)/, "#ffd400"],
+  [/(红|红色)/, "#e11d48"],
+  [/(蓝|蓝色|青蓝)/, "#2563eb"],
+  [/(绿|绿色)/, "#16a34a"],
+  [/(紫|紫色)/, "#7c3aed"],
+  [/(灰|灰色|银灰)/, "#cbd5e1"],
+];
+
+export const normalizeCssColor = value => {
+  const text = asText(value);
+  if (!text) return "";
+  // 已经是合法 CSS 值就直接放行（#rgb / #rrggbb / #rrggbbaa / rgb() / rgba()）
+  if (/^#[0-9a-f]{3,8}$/i.test(text) || /^rgba?\(/i.test(text)) return text;
+  const hit = COLOR_WORDS.find(([pattern]) => pattern.test(text));
+  return hit ? hit[1] : "";
+};
+
+/**
  * 标题样式模板（封面基底里存的那一份）—— 与 `normalizeCoverTitleStyle` 的区别：
  * 模板存的是**区间与上限**（字号基准/下限/最多几行），逐条的最终字号由
  * `computeTitleFontSize` 现算。用户口径：「保持标题字体类型风格一致，
  * 再根据标题长度和空间适当调整字体大小」——所以风格锁在模板里，字号是变量。
+ *
+ * `color` 存**能用的 CSS 值**；模型的原话另存 `colorDescription`（界面显示用）。
  */
 export const normalizeTitleStyleTemplate = value => {
   const base = normalizeCoverTitleStyle(value);
@@ -234,7 +266,8 @@ export const normalizeTitleStyleTemplate = value => {
   const num = (input, fallback) => (Number(input) > 0 ? Number(input) : fallback);
   return {
     fontFamily: base.fontFamily,
-    color: base.color,
+    color: normalizeCssColor(base.color),
+    colorDescription: cleanText(source.colorDescription || base.color, 200),
     position: base.position,
     alignment: base.alignment,
     note: base.note,

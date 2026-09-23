@@ -81,6 +81,33 @@ const toPreview = (text: string, max = 90) => {
   return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
 };
 
+/** 后端算标题字号用的设计稿宽度（对齐 publishWarehouse.js 的 TITLE_STYLE_DEFAULTS.canvasWidthPx）。 */
+const TITLE_CANVAS_WIDTH = 1080;
+
+/**
+ * 把标题按「可用宽度」折成几行（画布导出用）。
+ *
+ * 与预览的差别：预览交给浏览器自然折行，画布得自己量宽度 —— 所以两边都用
+ * 「最多几行 + 按长度收缩字号」这套同一口径，只是实现不同。
+ */
+const wrapCanvasText = (ctx: CanvasRenderingContext2D, text: string, maxWidth: number, maxLines: number) => {
+  const chars = [...text];
+  const lines: string[] = [];
+  let current = "";
+  for (const char of chars) {
+    const next = current + char;
+    if (current && ctx.measureText(next).width > maxWidth) {
+      lines.push(current);
+      current = char;
+      if (lines.length >= maxLines) break;
+    } else {
+      current = next;
+    }
+  }
+  if (lines.length < maxLines && current) lines.push(current);
+  return lines.length > 0 ? lines : [text];
+};
+
 const toggle = (list: string[], value: string) =>
   list.includes(value) ? list.filter(item => item !== value) : [...list, value];
 
@@ -226,7 +253,6 @@ export default function PublishWarehousePage() {
   const [styleChat, setStyleChat] = useState<Array<{ role: "user" | "model"; text: string }>>([]);
   const [portraitLoading, setPortraitLoading] = useState(false);
   const [baseImageLoading, setBaseImageLoading] = useState("");
-  const [baseTier, setBaseTier] = useState("semiCustom");
   // 视觉模型这次识别出来的原始样式描述：用户改的时候常常是在否定它，所以留着一起发给模型。
   const [recognizedStyle, setRecognizedStyle] = useState<Record<string, unknown> | null>(null);
   const [baseSourceImage, setBaseSourceImage] = useState<{ url: string; dataUrl: string } | null>(null);
@@ -343,7 +369,9 @@ export default function PublishWarehousePage() {
   const applyCoverBase = useCallback((base: CoverBase | null) => {
     setCoverBase(base);
     if (!base) return;
-    setBaseTier(base.tier || "semiCustom");
+    // 载入基底时把「正在看的那一类」也对齐到基底存的类型 ——
+    // 否则又会变成「高亮一个类型、内容渲染另一个类型」。
+    if (base.tier) setCoverSubTab(base.tier);
     setBaseSourceImage(base.sourceImage || null);
     setBaseAnalysis(base.analysis && (base.analysis.artStyle || base.analysis.summary) ? base.analysis : null);
     setBaseTitleStyle(base.titleStyle || null);
@@ -376,8 +404,8 @@ export default function PublishWarehousePage() {
 
   // 当前类型（读不到定义时先用一个最小兜底，保证渲染不依赖网络）。
   const activeTier: CoverTier | null = useMemo(
-    () => coverTiers.find(item => item.id === baseTier) || null,
-    [coverTiers, baseTier],
+    () => coverTiers.find(item => item.id === coverSubTab) || null,
+    [coverTiers, coverSubTab],
   );
 
   /**
@@ -529,7 +557,7 @@ export default function PublishWarehousePage() {
   };
 
   /** 保存封面基底（账号级，幂等 upsert）。 */
-  const persistCoverBase = async (nextTier = baseTier) => {
+  const persistCoverBase = async (nextTier = coverSubTab) => {
     if (!customerId) {
       setError("没有读到客户信息，无法保存封面基底");
       return;
@@ -564,7 +592,6 @@ export default function PublishWarehousePage() {
     try {
       await deleteCoverBase(customerId);
       applyCoverBase(null);
-      setBaseTier("semiCustom");
       setBaseSourceImage(null);
       setBaseAnalysis(null);
       setBaseTitleStyle(null);
@@ -643,7 +670,7 @@ export default function PublishWarehousePage() {
     const baseCandidates = baseSelection?.cover?.candidates || [];
     const titleStyle = baseSelection?.cover?.titleStyle || coverPlan?.titleStyle || null;
     // 出图期间用户可能换类型/换基底，所以这一刻也定格。
-    const tier = baseTier;
+    const tier = coverSubTab;
     // 参考图同样定格：背景风格模板（模仿风格）+ IP 人像（二类同一张脸、三类换表情）。
     // ⚠️ 以前读的是页面上的一个临时上传（`referenceDataUrl`），那个入口删掉后就恒为空 ——
     //    等于「参考图编辑」这条链静默失效。现在改为读封面基底，跟着类型走。
@@ -731,7 +758,7 @@ export default function PublishWarehousePage() {
     const id = `std-${text}`.slice(0, 80);
     const candidates = [
       ...existing.filter(item => item.id !== id),
-      { id, title: text, keywords: [], prompt: "", image: template, tier: baseTier },
+      { id, title: text, keywords: [], prompt: "", image: template, tier: coverSubTab },
     ];
     try {
       await persist(topicId, {
@@ -1077,12 +1104,13 @@ export default function PublishWarehousePage() {
     <div className="space-y-2">
       <div className="flex items-center gap-2">
         <span className={LABEL}>标题样式</span>
-        {/* 色块 = 颜色，一眼看到；没有样式就全是「待识别」的浅灰字，不用再写一句提示。 */}
+        {/* 色块 = 颜色，一眼看到；没有样式就全是「待识别」的浅灰字，不用再写一句提示。
+            悬浮给的是模型**原话** —— 它可能说「白色、橙色，无描边」，而这里只能显示一个色块。 */}
         {baseTitleStyle?.color && (
           <span
             className="h-3.5 w-3.5 rounded border border-slate-200"
             style={{ backgroundColor: baseTitleStyle.color }}
-            title={baseTitleStyle.color}
+            title={baseTitleStyle.colorDescription || baseTitleStyle.color}
           />
         )}
         <span className="text-[11px] text-slate-400">可一句话改</span>
@@ -1272,6 +1300,90 @@ export default function PublishWarehousePage() {
     return list;
   };
 
+  /**
+   * 底图上是不是**自带标题文字**。   *
+   * 一类只往图上叠新标题，没有任何一步会擦掉原文字 —— 底图自带标题时会叠成两条
+   * （2026-09-23 用户实测）。识别结果里读到字体/颜色描述/备注，就说明模型在图上看
+   * 到了标题文字，据此提示换底图。
+   */
+  const templateHasBakedTitle = Boolean(
+    activeTier?.id === "standard"
+    && baseAnalysis
+    && (baseTitleStyle?.fontFamily || baseTitleStyle?.colorDescription || baseTitleStyle?.note),
+  );
+
+  /**
+   * 把「底图 + 标题」合成成一张真正的 PNG 下载下来。
+   *
+   * 为什么不只给预览：预览是 DOM 叠字，用户拿不到文件；而这个模块的交付物就是**一张封面图**。
+   * 合成口径与预览一致：字号按 1080 宽的等比缩放到实际图宽，位置/颜色都取同一份 titleStyle。
+   *
+   * ⚠️ 底图是外链时会走 canvas 的跨域限制：对方不发 CORS 头的话 `toDataURL` 会抛错
+   *    （画布被污染）。这种情况如实报错并提示换成本地图 / 保存到本地，不要假装成功。
+   */
+  const downloadCover = async (candidate: CoverCandidate) => {
+    const src = candidate.image?.dataUrl || candidate.image?.url || "";
+    if (!src) {
+      setError("这张候选没有图片，无法导出");
+      return;
+    }
+    const text = overlayTextFor(candidate);
+    const style = coverTitleStyle;
+    setError("");
+    try {
+      const image = new Image();
+      // dataUrl 不需要也不该设这个；外链则需要，否则画布会被污染。
+      if (!src.startsWith("data:")) image.crossOrigin = "anonymous";
+      await new Promise<void>((resolve, reject) => {
+        image.onload = () => resolve();
+        image.onerror = () => reject(new Error("底图加载失败（外链可能不允许跨域取图）"));
+        image.src = src;
+      });
+
+      const canvas = document.createElement("canvas");
+      canvas.width = image.naturalWidth || TITLE_CANVAS_WIDTH;
+      canvas.height = image.naturalHeight || Math.round(TITLE_CANVAS_WIDTH * 4 / 3);
+      const ctx = canvas.getContext("2d");
+      if (!ctx) throw new Error("当前浏览器不支持画布导出");
+
+      ctx.drawImage(image, 0, 0);
+
+      if (text) {
+        // 预览里字号是按 1080 宽的设计稿算的，这里等比放到实际图宽。
+        const scale = canvas.width / TITLE_CANVAS_WIDTH;
+        const size = Math.max(12, Math.round(fontSizeFor(text) * scale));
+        const maxLines = style?.maxLines ?? 2;
+        ctx.font = `bold ${size}px ${style?.fontFamily ? `"${style.fontFamily}", ` : ""}sans-serif`;
+        ctx.fillStyle = style?.color || "#ffffff";
+        ctx.textAlign = "center";
+        ctx.textBaseline = "alphabetic";
+        const lines = wrapCanvasText(ctx, text, canvas.width * 0.9, maxLines);
+        const lineHeight = size * 1.15;
+        const blockHeight = lines.length * lineHeight;
+        let y = style?.position === "top"
+          ? size * 1.25
+          : style?.position === "center"
+            ? (canvas.height - blockHeight) / 2 + size * 0.85
+            : canvas.height - blockHeight + size * 0.5;
+        for (const line of lines) {
+          ctx.fillText(line, canvas.width / 2, y);
+          y += lineHeight;
+        }
+      }
+
+      const anchor = document.createElement("a");
+      anchor.href = canvas.toDataURL("image/png");
+      anchor.download = `${(text || "封面").slice(0, 40)}.png`;
+      anchor.click();
+      setMessage("已导出这张封面（PNG）");
+    } catch (error) {
+      setError(
+        `${error instanceof Error ? error.message : "导出失败"}。`
+        + "可以先把底图存到本地再上传（本地文件不受跨域限制）。",
+      );
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#f5f7fb]">
       {/* 页头与其他页面同一套：白底 + slate-200 分割线 + 左标题右操作。
@@ -1374,7 +1486,7 @@ export default function PublishWarehousePage() {
                     <button
                       key={tier.id}
                       type="button"
-                      onClick={() => { setCoverSubTab(tier.id); setBaseTier(tier.id); }}
+                      onClick={() => setCoverSubTab(tier.id)}
                       className={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm transition ${selected ? SEG_ON : SEG_OFF}`}
                     >
                       {tier.code}、{tier.label}
@@ -1453,7 +1565,17 @@ export default function PublishWarehousePage() {
                             baseSourceImage,
                             file => handleBaseImageUpload(file, image => { setBaseSourceImage(image); setBaseAnalysis(null); }),
                             "上传固定封面模板",
-                            "之后每一期只换标题",
+                            "只要人像 + 背景的底图，不要带标题文字",
+                          )}
+                          {/* ⚠️ 一类只负责**叠字**，没有任何一步会擦掉原图上的文字。
+                              如果底图本身就印着标题，叠上去就会两条标题叠在一起（用户实测踩到）。
+                              识别结果里出现了字体/颜色/备注，就说明模型在这张图上读到了标题文字。 */}
+                          {templateHasBakedTitle && (
+                            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">
+                              这张底图上似乎已经有标题文字了。一类只往图上叠新标题，
+                              <span className="font-semibold">不会擦掉原文字</span> ——
+                              请换一张不含标题的底图（只留人像和背景），否则会出现两条标题叠在一起。
+                            </div>
                           )}
                         </div>
                         <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">{titleStyleBlock}</div>
@@ -1594,9 +1716,23 @@ export default function PublishWarehousePage() {
                 {/* 候选与标题叠加 */}
                 <Card className={CARD}>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-semibold text-slate-900">
-                      封面候选 <span className="text-slate-400">{coverCandidates.length}</span>
-                    </CardTitle>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <CardTitle className="text-sm font-semibold text-slate-900">
+                        封面候选 <span className="text-slate-400">{coverCandidates.length}</span>
+                      </CardTitle>
+                      {/* 预览是 DOM 叠字，用户拿不到文件；这个模块的交付物是一张封面图，
+                          所以给一个「导成 PNG」的出口（画布合成，口径与预览一致）。 */}
+                      {selectedCover && (
+                        <Button
+                          variant="outline"
+                          className={BTN_SM}
+                          onClick={() => downloadCover(selectedCover)}
+                          title="把选中的这张（底图 + 标题）合成成 PNG 下载"
+                        >
+                          导出这张封面
+                        </Button>
+                      )}
+                    </div>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {coverCandidates.length === 0 ? (
@@ -1617,7 +1753,7 @@ export default function PublishWarehousePage() {
                             >
                               <button
                                 type="button"
-                                className="relative block w-full"
+                                className="relative block w-full [container-type:inline-size]"
                                 onClick={() => persist(activeTopicId, {
                                   cover: { selectedId: candidate.id, candidates: coverCandidates, titleStyle: coverTitleStyle || null },
                                   publishCopy: activeSelection?.publishCopy || null,
@@ -1645,9 +1781,12 @@ export default function PublishWarehousePage() {
                                       coverTitleStyle?.position === "top" ? "top-2" : coverTitleStyle?.position === "center" ? "top-1/2 -translate-y-1/2" : "bottom-2"
                                     }`}
                                     style={{
+                                      // 颜色必须已经是**合法 CSS 值**（后端 normalizeCssColor 收敛过）：
+                                      // 模型回的是「白色、橙色，无描边或阴影」这种描述，直接当 CSS 会被静默丢弃 → 变黑字。
                                       color: coverTitleStyle?.color || "#ffffff",
-                                      // ⚠️ 用后端算好的**数字**字号：模型给的自由文本当 CSS 值会被浏览器静默丢掉。
-                                      fontSize: `${fontSizeFor(label)}px`,
+                                      // 后端的字号是按 1080 宽的竖版设计稿算的，所以这里换成**容器宽度百分比**（cqw），
+                                      // 让它随缩略图一起缩放 —— 写死 px 会让预览严重失真。
+                                      fontSize: `${(fontSizeFor(label) / TITLE_CANVAS_WIDTH) * 100}cqw`,
                                     }}
                                   >
                                     {label}

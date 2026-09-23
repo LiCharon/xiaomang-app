@@ -18,11 +18,15 @@
  * 用法：
  *   node scripts/verify-server-routes.mjs
  *
- * 安全性：全程只用一个**临时库**（跑完 dropDatabase），DeepSeek 用假 key 让它必失败
- * —— 不碰真实数据，也不消耗真实额度。
+ * 安全性：全程只用一个**临时库**（跑完 dropDatabase）+ 一个**临时 DATA_DIR**
+ * （最终文案草稿在 Express 侧落本地 JSON 文件，临时库隔离不了它），DeepSeek 用假 key
+ * 让它必失败 —— 不碰真实数据，也不消耗真实额度。
  */
 import "dotenv/config";
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import bcrypt from "bcryptjs";
 import { MongoClient } from "mongodb";
 
@@ -44,6 +48,11 @@ const TEMP_DB = `xmverify_${process.pid.toString(36)}${Date.now().toString(36)}`
 // 报一句没有信息量的 `fetch failed`（2026-09-18 撞到多次）。
 // 随机端口让两次运行天然错开；下面的存活检查保证我们测的确实是本次起的进程。
 const PORT = Number(process.env.VERIFY_PORT || (8800 + Math.floor(Math.random() * 900)));
+// ⚠️ 最终文案草稿在 Express 侧是**落本地 JSON 文件**（默认 `src/data/final-drafts.json`），
+// 不在 MongoDB 里 —— 所以临时库并不能隔离它。这里显式把 DATA_DIR 指到临时目录，
+// 否则本脚本会往真实数据文件里塞冒烟草稿（与脚本上面「不碰真实数据」的承诺相违）。
+// 同理每次运行都换目录：并发跑两次时，两个进程会互相删掉对方刚写的草稿。
+const TEMP_DATA_DIR = path.join(os.tmpdir(), `xmverify-data-${process.pid.toString(36)}${Date.now().toString(36)}`);
 const INVITE_CODE = "verifycode123";
 // 本脚本种下的数据的标记：用来定向清理，避免为了干净而删库。
 const SEED_TAG = "__verify_seed__";
@@ -131,6 +140,7 @@ const child = spawn(process.execPath, ["src/index.js"], {
     ...process.env,
     PORT: String(PORT),
     MONGODB_DB_NAME: TEMP_DB,
+    DATA_DIR: TEMP_DATA_DIR,
     // 让 Agent 一定失败 —— 我们要验的正是「失败之后怎么走」。
     DEEPSEEK_API_KEY: "invalid-key-for-smoke-test",
     AGENT_RETRY_ATTEMPTS: "0",
@@ -148,6 +158,8 @@ const cleanup = async () => {
   await sleep(200);
   await db.dropDatabase().catch(() => {});
   await client.close().catch(() => {});
+  // 临时草稿目录一起清掉（里面只有本脚本写的冒烟草稿）。
+  await fs.promises.rm(TEMP_DATA_DIR, { recursive: true, force: true }).catch(() => {});
 };
 
 try {
@@ -1445,6 +1457,54 @@ try {
   // 清理这条链路造的数据
   await mgmt(`/tasks/${chainTask.json?._id}`, { method: "DELETE" });
   await mgmt(`/customers/${chainCustomerId}`, { method: "DELETE" });
+
+  // ★ 发布仓产出必须活着进最终草稿 —— 否则用户在发布仓挑的封面/文案/标签导出时全丢。
+  //   这条链路只走 HTTP：POST /api/final-drafts 存 → GET 读回 → 形状与首轮归一化一致。
+  const publishDraft = await empPost("/api/final-drafts", {
+    titleDraft: "冒烟标题",
+    hookDraft: "冒烟三秒",
+    scriptDraft: "冒烟二创",
+    benchmarkVideos: [],
+    publishWarehouse: {
+      cover: { url: "https://cdn.example.com/smoke-cover.png", title: "冒烟封面" },
+      coverUrl: "https://cdn.example.com/smoke-cover.png",
+      coverTitle: "冒烟封面",
+      copy: "冒烟发布文案",
+      tags: "#冒烟 #标签",
+    },
+  }, employeeA);
+  check(publishDraft.status === 200 && Boolean(publishDraft.json?.item?.id),
+    `★ 员工保存带发布仓产出的最终草稿 → 200（实际 ${publishDraft.status}）`,
+    JSON.stringify(publishDraft.json).slice(0, 250));
+  const savedPublish = publishDraft.json?.item?.publishWarehouse || null;
+  check(savedPublish?.coverUrl === "https://cdn.example.com/smoke-cover.png",
+    "  封面外链原样存下来了");
+  check(savedPublish?.copy === "冒烟发布文案" && savedPublish?.tags === "#冒烟 #标签",
+    "  发布文案与发布标签原样存下来了");
+
+  // 只回 base64 的封面（出图接口可能这样）—— 必须如实标成内嵌，且不能把几 MB 的 dataUrl 落库
+  const inlineDraft = await empPost("/api/final-drafts", {
+    titleDraft: "内嵌封面冒烟",
+    benchmarkVideos: [],
+    publishWarehouse: { cover: { dataUrl: `data:image/png;base64,${"A".repeat(5000)}` } },
+  }, employeeA);
+  const inlineSaved = inlineDraft.json?.item?.publishWarehouse || null;
+  check(inlineSaved?.coverUrl === "" && inlineSaved?.coverInline === true,
+    "★★ 只有 base64 的封面：不落 dataUrl，如实标成内嵌（否则几 MB 会撑爆草稿文件）",
+    JSON.stringify(inlineSaved).slice(0, 200));
+  check(!JSON.stringify(inlineSaved || {}).includes("data:image/png"),
+    "  且落库结果里找不到 data: 开头的图片数据");
+
+  const draftsRead = await empGet("/api/final-drafts", employeeA);
+  const drafts = Array.isArray(draftsRead.json?.items) ? draftsRead.json.items : [];
+  const readBack = drafts.find(item => String(item?.id) === String(publishDraft.json?.item?.id));
+  check(Boolean(readBack?.publishWarehouse?.copy),
+    "★ 列表读回时发布仓产出还在（导出读的就是这份草稿）",
+    `列表 ${drafts.length} 条`);
+
+  for (const id of [publishDraft.json?.item?.id, inlineDraft.json?.item?.id]) {
+    if (id) await fetch(`${BASE}/api/final-drafts/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Cookie: employeeA.cookie } });
+  }
 
   // ⑧ 清理：删任务 → 删员工 → 删客户（顺带验证删除链是通的）
   for (const id of [mgTaskId, ...(mgTaskBatch.json || []).map(item => String(item._id))]) {

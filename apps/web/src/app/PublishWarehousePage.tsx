@@ -475,15 +475,38 @@ export default function PublishWarehousePage() {
     }
   };
 
+  /**
+   * 把当前选题的三块产出拼成最终编辑页要的负载。
+   *
+   * ⚠️ 只带 http(s) 封面外链，**不带 dataUrl**：出图可能回 base64，一张几 MB，
+   *    塞进 sessionStorage 会把配额撑爆、连带别的草稿一起丢。只有内嵌图时用 `coverInline` 如实标注。
+   * 标签口径与后端 `buildPublishBundle` 一致：账号恒定标签 + 选题标签，统一补 `#`。
+   */
+  const buildPublishPayload = () => {
+    const url = String(selectedCover?.image?.url || "").trim();
+    const dataUrl = String(selectedCover?.image?.dataUrl || "").trim();
+    const copyList = (activeSelection?.publishCopy?.selected || [])
+      .map(item => String(item || "").trim()).filter(Boolean);
+    const tagList = [...Object.values(accountConfirmed), ...tagSelected]
+      .map(item => String(item || "").trim()).filter(Boolean)
+      .map(item => (item.startsWith("#") ? item : `#${item}`));
+    return {
+      coverUrl: /^https?:\/\//i.test(url) ? url : "",
+      coverTitle: String(selectedCover?.title || ""),
+      coverPrompt: String(selectedCover?.prompt || ""),
+      coverInline: !/^https?:\/\//i.test(url) && Boolean(dataUrl),
+      copy: copyList.join("\n"),
+      tags: Array.from(new Set(tagList)).join(" "),
+    };
+  };
+
   const goToFinalEditor = () => {
-    // 把发布仓的勾选与封面一起带给最终编辑页（它只读 `finalDraftPayload`）。
+    // 把本条的发布产出带给最终编辑页（那一页只读 `finalDraftPayload`，
+    // 并把它作为可编辑段落并入最终草稿，之后导出飞书文档与多维表格都带着它）。
     const existing = loadJson<any>("finalDraftPayload", null);
     const payload = {
       ...(existing || {}),
-      publishWarehouse: {
-        selections: Object.values(selections),
-        accountTags: Object.values(accountConfirmed).filter(Boolean),
-      },
+      publishWarehouse: buildPublishPayload(),
       taskInfo: existing?.taskInfo || (activeTask ? {
         id: String(activeTask._id || ""),
         customerName: String(activeTask.customerName || ""),
@@ -537,7 +560,9 @@ export default function PublishWarehousePage() {
               </div>
               <h1 className="text-3xl font-semibold tracking-tight text-slate-950">发布仓</h1>
               <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-                为每条选题确认封面、发布文案与发布标签，然后核查并导出。这是本轮的最后一个步骤。
+                为每条选题确认封面、发布文案与发布标签。确认完进最终文案编辑页保存 ——
+                这三块会<span className="font-medium text-slate-700">并入最终文案</span>，
+                导出飞书文档与多维表格时一并带过去。
               </p>
             </div>
             <div className="flex items-center gap-2.5">
@@ -1002,6 +1027,14 @@ export default function PublishWarehousePage() {
               <Button variant="outline" disabled={exporting === "bitable"} onClick={() => exportAll("bitable")}>
                 {exporting === "bitable" ? "写入中…" : "写入多维表格"}
               </Button>
+            </div>
+
+            {/* 这两个按钮写的是「已保存的最终文案」，而草稿是在最终文案编辑页保存出来的。
+                不写清前提的话，第一次走流程的人会在这里点出一个「暂无可导出」的错误。 */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-500">
+              导出读的是<span className="font-medium text-slate-700">已保存的最终文案</span>
+              （在最终文案编辑页点「保存最终文案」时产生）。还没保存过的话，先点左边的
+              「进入最终文案编辑页」保存一条，再回来导出 —— 封面、发布文案与发布标签会一并带进导出结果。
             </div>
 
             <div className="rounded-xl border border-slate-200 px-4 py-3">

@@ -1,5 +1,5 @@
 import { randomUUID } from "crypto";
-import { buildFinalDraftMarkdown, normalizeBenchmarkVideos } from "./exportFormatters.js";
+import { buildFinalDraftMarkdown, normalizeBenchmarkVideos, publishWarehouseCells } from "./exportFormatters.js";
 import { AgentError, fetchJson, retryDelayMs, sleep } from "./contentAgent/http.js";
 
 const FEISHU_BASE_URL = "https://open.feishu.cn";
@@ -374,6 +374,13 @@ export const BITABLE_FIELDS = [
   { field_name: "二创文案", type: 1 },
   { field_name: "风格转写结果", type: 1 },
   { field_name: "中英翻译结果", type: 1 },
+  // 发布仓三块产出（3.1 封面 / 3.2 发布文案 / 3.3 发布标签）。
+  // ⚠️ 发布封面用**文本**列，而不是像「视频封面」那样用 URL 列：出图接口可能只回 base64，
+  //    那种情况没有外链可放，URL 列会直接空掉 —— 客户就看不出这条到底出没出图。
+  //    文本列能如实写「封面：内嵌图片（无外链）」，不静默丢信息。
+  { field_name: "发布封面", type: 1 },
+  { field_name: "发布文案", type: 1 },
+  { field_name: "发布标签", type: 1 },
   { field_name: "导出时间", type: 5 },
 ];
 
@@ -455,6 +462,8 @@ export const finalDraftToBitableRecords = (draft = {}) => {
         },
       ];
 
+  const publishCells = publishWarehouseCells(draft?.publishWarehouse);
+
   return videos.map((video, index) => {
     const fields = {
       "选题标题": limitCellText(video.title || `选题 ${index + 1}`),
@@ -471,6 +480,9 @@ export const finalDraftToBitableRecords = (draft = {}) => {
       "二创文案": limitCellText(draft.scriptDraft),
       "风格转写结果": limitCellText(draft.rewriteDraft),
       "中英翻译结果": limitCellText(draft.translationDraft),
+      "发布封面": limitCellText(publishCells.cover),
+      "发布文案": limitCellText(publishCells.copy),
+      "发布标签": limitCellText(publishCells.tags),
       "导出时间": Date.now(),
     };
 

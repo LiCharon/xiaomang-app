@@ -111,6 +111,82 @@ export const formatMetric = (value) => {
   return String(numeric);
 };
 
+const limitText = (value, maxLength) => String(value || "").trim().slice(0, maxLength);
+
+/**
+ * 发布仓三块产出（3.1 封面 / 3.2 发布文案 / 3.3 发布标签）的导出形状。
+ *
+ * ⚠️ 封面**只认 http(s) 外链**：出图接口可能回 base64 dataUrl，那种值有几 MB，
+ *    写进飞书单元格会被 50000 字符上限截断成一段乱码，也会把本地草稿撑爆。
+ *    所以 dataUrl 只用来在页面上预览，导出时如实标成「内嵌图片、无外链」。
+ */
+export const normalizePublishWarehouse = (input = {}) => {
+  const source = input && typeof input === "object" ? input : {};
+  const cover = source.cover && typeof source.cover === "object" ? source.cover : {};
+  const coverUrl = firstHttpUrl(
+    cover.url,
+    cover.imageUrl,
+    cover.coverUrl,
+    source.coverUrl,
+  );
+  const coverInline = !coverUrl && Boolean(cover.dataUrl || cover.inlineDataUrl || source.coverInline);
+  return {
+    coverUrl,
+    // 用户最终选中的那张封面在页面上是可以换成别的外链的，所以这里认字符串优先。
+    coverTitle: limitText(cover.title || source.coverTitle, 300),
+    coverPrompt: limitText(cover.prompt || source.coverPrompt, 1200),
+    coverInline,
+    copy: limitText(source.copy || source.publishCopy, 4000),
+    tags: limitText(source.tags || source.publishTags, 1000),
+  };
+};
+
+/** 三块都为空时不渲染这一段，避免给导出的文档塞一堆空标题。 */
+export const hasPublishWarehouse = (value) => {
+  const normalized = normalizePublishWarehouse(value);
+  return Boolean(
+    normalized.coverUrl
+    || normalized.coverInline
+    || normalized.coverTitle
+    || normalized.copy
+    || normalized.tags,
+  );
+};
+
+/**
+ * 三块产出拆成可直接写进单元格的三段文本。
+ * markdown / CSV / 多维表格都从这里取，避免三处各拼一遍（口径会漂）。
+ */
+export const publishWarehouseCells = (value) => {
+  const item = normalizePublishWarehouse(value);
+  return {
+    cover: [
+      item.coverUrl
+        ? `封面：${item.coverUrl}`
+        : (item.coverInline ? "封面：内嵌图片（无外链，无法写入飞书）" : ""),
+      item.coverTitle ? `封面标题：${item.coverTitle}` : "",
+      item.coverPrompt ? `出图提示词：${item.coverPrompt}` : "",
+    ].filter(Boolean).join("\n"),
+    copy: item.copy,
+    tags: item.tags,
+  };
+};
+
+export const formatPublishWarehouseSection = (value) => {
+  if (!hasPublishWarehouse(value)) return "未提供";
+  const cells = publishWarehouseCells(value);
+  return [
+    "## 发布封面",
+    cells.cover || "未提供",
+    "",
+    "## 发布文案",
+    cells.copy || "未提供",
+    "",
+    "## 发布标签",
+    cells.tags || "未提供",
+  ].join("\n");
+};
+
 export const formatDuration = (value) => {
   const total = Math.max(0, Math.round(Number(value || 0)));
   if (!total) return "未知";
@@ -139,6 +215,11 @@ export const formatBenchmarkSection = (videos) => {
 
 export const buildFinalDraftMarkdown = (draft = {}, options = {}) => {
   const heading = options.heading || "最终文案";
+  // 发布仓的三块产出只在真的带了的时候才追加这一段：
+  // 从内容生成页直接来最终编辑页（没经过发布仓）的草稿导出的文档与以前完全一致。
+  const publishSection = hasPublishWarehouse(draft.publishWarehouse)
+    ? ["", formatPublishWarehouseSection(draft.publishWarehouse)]
+    : [];
   return [
     `# ${heading}`,
     "",
@@ -159,6 +240,7 @@ export const buildFinalDraftMarkdown = (draft = {}, options = {}) => {
     "",
     "## 中英翻译结果",
     String(draft.translationDraft || ""),
+    ...publishSection,
     "",
   ].join("\n");
 };
@@ -167,26 +249,39 @@ export const csvEscape = (value) => `"${String(value || "").replace(/"/g, '""')}
 
 export const rowsToCsv = (rows) => rows.map(row => row.map(csvEscape).join(",")).join("\n");
 
-export const buildFinalDraftCsvRows = (draft = {}) => [
-  ["板块", "内容"],
-  ["对标选题视频", formatBenchmarkSection(draft.benchmarkVideos)],
-  ["标题", String(draft.titleDraft || "")],
-  ["3秒留存", String(draft.hookDraft || "")],
-  ["二创文案", String(draft.scriptDraft || "")],
-  ["风格转写结果", String(draft.rewriteDraft || "")],
-  ["中英翻译结果", String(draft.translationDraft || "")],
-];
+export const buildFinalDraftCsvRows = (draft = {}) => {
+  const rows = [
+    ["板块", "内容"],
+    ["对标选题视频", formatBenchmarkSection(draft.benchmarkVideos)],
+    ["标题", String(draft.titleDraft || "")],
+    ["3秒留存", String(draft.hookDraft || "")],
+    ["二创文案", String(draft.scriptDraft || "")],
+    ["风格转写结果", String(draft.rewriteDraft || "")],
+    ["中英翻译结果", String(draft.translationDraft || "")],
+  ];
+  if (hasPublishWarehouse(draft.publishWarehouse)) {
+    const cells = publishWarehouseCells(draft.publishWarehouse);
+    rows.push(["发布封面", cells.cover], ["发布文案", cells.copy], ["发布标签", cells.tags]);
+  }
+  return rows;
+};
 
 export const buildDraftListCsvRows = (items = []) => [
-  ["序号", "保存时间", "对标选题视频", "标题", "3秒留存", "二创文案", "风格转写结果", "中英翻译结果"],
-  ...items.map((item, index) => [
-    String(index + 1),
-    String(item?.createdAt || ""),
-    formatBenchmarkSection(item?.benchmarkVideos),
-    String(item?.titleDraft || ""),
-    String(item?.hookDraft || ""),
-    String(item?.scriptDraft || ""),
-    String(item?.rewriteDraft || ""),
-    String(item?.translationDraft || ""),
-  ]),
+  ["序号", "保存时间", "对标选题视频", "标题", "3秒留存", "二创文案", "风格转写结果", "中英翻译结果", "发布封面", "发布文案", "发布标签"],
+  ...items.map((item, index) => {
+    const cells = publishWarehouseCells(item?.publishWarehouse);
+    return [
+      String(index + 1),
+      String(item?.createdAt || ""),
+      formatBenchmarkSection(item?.benchmarkVideos),
+      String(item?.titleDraft || ""),
+      String(item?.hookDraft || ""),
+      String(item?.scriptDraft || ""),
+      String(item?.rewriteDraft || ""),
+      String(item?.translationDraft || ""),
+      cells.cover,
+      cells.copy,
+      cells.tags,
+    ];
+  }),
 ];

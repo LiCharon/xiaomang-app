@@ -7,6 +7,9 @@ export type CachedFinalDraft = {
   rewriteDraft?: string;
   translationDraft?: string;
   benchmarkVideos?: Array<Record<string, unknown>>;
+  /** 发布仓三块产出（3.1 封面 / 3.2 发布文案 / 3.3 发布标签），随草稿一起缓存待导出。 */
+  publishWarehouse?: Record<string, unknown> | null;
+  taskInfo?: Record<string, unknown> | null;
 };
 
 const CACHE_KEY = "xiaomang.finalDrafts";

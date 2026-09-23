@@ -17,6 +17,9 @@ export default async function handler(req: any, res: any) {
       rewriteDraft: body?.rewriteDraft,
       translationDraft: body?.translationDraft,
       benchmarkVideos: Array.isArray(body?.benchmarkVideos) ? body.benchmarkVideos : [],
+      publishWarehouse: body?.publishWarehouse && typeof body.publishWarehouse === "object"
+        ? body.publishWarehouse
+        : null,
     });
     return json(res, 200, { success: true, item });
   }

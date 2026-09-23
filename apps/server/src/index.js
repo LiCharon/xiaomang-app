@@ -53,6 +53,7 @@ import {
 import {
   buildFinalDraftMarkdown,
   normalizeBenchmarkVideos,
+  normalizePublishWarehouse,
 } from "../api/_lib/exportFormatters.js";
 import {
   createFeishuBitableForTask,
@@ -1970,6 +1971,7 @@ app.post("/api/final-drafts", async (req, res) => {
     rewriteDraft = "",
     translationDraft = "",
     benchmarkVideos = [],
+    publishWarehouse = null,
   } = req.body || {};
 
   try {
@@ -1983,6 +1985,11 @@ app.post("/api/final-drafts", async (req, res) => {
       rewriteDraft: String(rewriteDraft || ""),
       translationDraft: String(translationDraft || ""),
       benchmarkVideos: normalizeBenchmarkVideos(benchmarkVideos),
+      // 发布仓三块产出。**落库前先归一化**：它会把封面 dataUrl 挡掉、并把各段截到上限，
+      // 否则一张 base64 封面就能把这份 JSON 文件撑到几 MB。
+      publishWarehouse: publishWarehouse && typeof publishWarehouse === "object"
+        ? normalizePublishWarehouse(publishWarehouse)
+        : null,
     };
 
     db.items = [item, ...(Array.isArray(db.items) ? db.items : [])].slice(0, 200);

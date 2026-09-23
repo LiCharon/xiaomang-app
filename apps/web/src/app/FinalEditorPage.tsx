@@ -21,6 +21,22 @@ type BenchmarkVideo = {
   hotTopics?: string[];
 };
 
+/**
+ * 发布仓（3.1 封面 / 3.2 发布文案 / 3.3 发布标签）交接下来的三块产出。
+ *
+ * ⚠️ 这里只带 http(s) 的封面外链，**不带 dataUrl**：出图可能回 base64，
+ *    一张就有几 MB，塞进 sessionStorage 的 payload 会直接把配额撑爆（其它草稿一起丢）。
+ *    只有内嵌图时会带 `coverInline`，页面如实说明「无外链、导不到飞书」。
+ */
+type PublishWarehousePayload = {
+  coverUrl?: string;
+  coverTitle?: string;
+  coverPrompt?: string;
+  coverInline?: boolean;
+  copy?: string;
+  tags?: string;
+};
+
 type FinalDraftPayload = {
   selectedTitles?: Array<{ title: string; detail?: string; raw?: string }>;
   selectedHooks?: Array<{ id: string; content: string; hookType: string }>;
@@ -94,6 +110,16 @@ export default function FinalEditorPage() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
 
+  // 发布仓带下来的三块产出（可编辑）。没有经过发布仓时全部为空，页面会如实说明。
+  const publish = payload.publishWarehouse;
+  const [publishCoverUrl, setPublishCoverUrl] = useState(() => String(publish?.coverUrl || ""));
+  const [publishCopy, setPublishCopy] = useState(() => String(publish?.copy || ""));
+  const [publishTags, setPublishTags] = useState(() => String(publish?.tags || ""));
+  const hasPublishInput = Boolean(
+    publish
+    && (publish.coverUrl || publish.coverInline || publish.coverTitle || publish.copy || publish.tags),
+  );
+
   const hasRewriteResult = (payload.rewriteResults || []).length > 0;
   const hasTranslationResult = (payload.translationItems || []).length > 0;
 
@@ -105,6 +131,16 @@ export default function FinalEditorPage() {
     translationDraft: hasTranslationResult ? translationDraft : "",
     benchmarkVideos,
     taskInfo: payload.taskInfo || null,
+    // 发布仓的三块产出跟着草稿一起存 —— 飞书文档/多维表格的导出读的就是这份 saved draft，
+    // 所以只有进到这里，用户挑的封面与勾的文案标签才真的会出现在导出结果里。
+    publishWarehouse: hasPublishInput ? {
+      coverUrl: publishCoverUrl.trim(),
+      coverTitle: String(publish?.coverTitle || ""),
+      coverPrompt: String(publish?.coverPrompt || ""),
+      coverInline: Boolean(publish?.coverInline),
+      copy: publishCopy,
+      tags: publishTags,
+    } : null,
   };
 
   const saveFinalDraft = async () => {
@@ -246,6 +282,91 @@ export default function FinalEditorPage() {
               </Card>
             )}
           </div>
+        )}
+
+        {/* ── 发布仓产出（3.1 封面 / 3.2 发布文案 / 3.3 发布标签）───────────────
+            这三块和上面的标题/3秒/二创一样是**可编辑段落**，会跟着草稿一起保存，
+            导出飞书文档与多维表格时一并带上。顺序与导出文档一致（放在最后一组）。 */}
+        {hasPublishInput ? (
+          <>
+            <Card className="bg-white border-slate-200">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">发布封面</CardTitle>
+                  <Badge className="bg-blue-50 text-blue-600">可编辑</Badge>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                {publishCoverUrl ? (
+                  <img
+                    src={publishCoverUrl}
+                    alt={publish?.coverTitle || "发布封面"}
+                    className="w-full max-w-[240px] rounded-lg border border-slate-200 object-cover"
+                  />
+                ) : (
+                  <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 px-3 py-2.5 text-xs leading-5 text-amber-700">
+                    这次封面只有内嵌图片、没有外链（出图接口回的是 base64），所以这里预览不了、
+                    也写不进飞书的链接。需要链接的话，请在发布仓重新出一张、或直接把图片地址贴到下面。
+                  </div>
+                )}
+                {publish?.coverTitle ? (
+                  <div className="text-xs text-slate-500">封面标题：{publish.coverTitle}</div>
+                ) : null}
+                <label className="block text-xs font-medium text-slate-600">
+                  封面图链接（导出到飞书用）
+                  <input
+                    value={publishCoverUrl}
+                    onChange={(e) => setPublishCoverUrl(e.target.value)}
+                    placeholder="https://..."
+                    className="mt-1.5 w-full rounded-md border border-slate-300 p-2.5 text-sm"
+                  />
+                </label>
+              </CardContent>
+            </Card>
+
+            <Card className="bg-white border-slate-200">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">发布文案</CardTitle>
+                  <Badge className="bg-blue-50 text-blue-600">可编辑</Badge>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <textarea
+                  value={publishCopy}
+                  onChange={(e) => setPublishCopy(e.target.value)}
+                  placeholder="发布仓里勾选的发布文案会出现在这里"
+                  className="w-full min-h-40 rounded-md border border-slate-300 p-3 text-sm leading-6"
+                />
+              </CardContent>
+            </Card>
+
+            <Card className="bg-white border-slate-200">
+              <CardHeader className="pb-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle className="text-base">发布标签</CardTitle>
+                  <Badge className="bg-blue-50 text-blue-600">可编辑</Badge>
+                </div>
+              </CardHeader>
+              <CardContent>
+                <textarea
+                  value={publishTags}
+                  onChange={(e) => setPublishTags(e.target.value)}
+                  placeholder="#标签 之间用空格分隔"
+                  className="w-full min-h-28 rounded-md border border-slate-300 p-3 text-sm leading-6"
+                />
+              </CardContent>
+            </Card>
+          </>
+        ) : (
+          <Card className="bg-white border-slate-200">
+            <CardContent className="pt-6">
+              <div className="rounded-lg border border-dashed border-slate-300 px-3 py-4 text-xs leading-5 text-slate-500">
+                这次没有经过发布仓（或发布仓里还没选封面/发布文案/发布标签），所以没有可并入的发布产出。
+                需要的话先回发布仓确认，再回到本页保存。
+              </div>
+            </CardContent>
+          </Card>
         )}
 
         {saveMessage && (

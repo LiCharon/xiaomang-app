@@ -15,7 +15,7 @@ import { fetchJson } from "../api/_lib/contentAgent/http.js";
 import { DRAMA_BENCHMARK_ANALYSIS_PROMPT, GOLD_THREE_SECONDS_PROMPT, SPOKEN_BENCHMARK_ANALYSIS_PROMPT } from "../api/_lib/contentAgent/prompts.js";
 import { buildCreativeFallback, buildFfmpegAudioExtractArgs, buildTikHubVideoAttempts, decryptWeChatChannelsMediaBuffer, describeVideoUrlForDiagnostics, isDirectMp4Url, recognizeDoubaoAudio, resolveTikHubVideo, resolveWeChatChannelsTopicVideo, runCreativeAgents, shouldStreamVideoInputForFfmpeg } from "../api/_lib/contentAgent/providers.js";
 import { generateKeystream } from "../api/_lib/contentAgent/vendor/wechatKeystream.mjs";
-import { buildFinalDraftMarkdown, normalizeBenchmarkVideos } from "../api/_lib/exportFormatters.js";
+import { buildFinalDraftMarkdown, normalizeBenchmarkVideos, normalizePublishWarehouse, publishWarehouseCells } from "../api/_lib/exportFormatters.js";
 import { BITABLE_FIELDS, finalDraftToBitableRecords, markdownToFeishuBlocks, parseFeishuBitableUrl } from "../api/_lib/feishuClient.js";
 import { isWithinRecentDays, normalizePlatform, normalizeWeChatChannelsTopic } from "../api/_lib/platformAdapters.js";
 
@@ -900,4 +900,89 @@ test("content agent workflow returns SSE Error event for invalid input", async (
   assert.match(streamText, /event: Error/);
   assert.match(streamText, /SHARE_LINKS_EMPTY/);
   assert.equal(res.ended, true);
+});
+
+// ── 发布仓三块产出并入最终草稿与导出（HANDOFF §0.3，用户选「成品并入最终编辑页」）
+
+test("发布仓产出：封面只认 http 外链，dataUrl 不落进导出形状", () => {
+  const inline = normalizePublishWarehouse({
+    cover: { dataUrl: "data:image/png;base64," + "A".repeat(200), title: "封面 1" },
+    copy: "金句一句",
+    tags: "#劳动法",
+  });
+  assert.equal(inline.coverUrl, "");
+  assert.equal(inline.coverInline, true, "只有内嵌图时必须标出来，不能静默当成没有封面");
+
+  const linked = normalizePublishWarehouse({
+    cover: { url: "https://cdn.example.com/c.png", dataUrl: "data:image/png;base64,AAAA", title: "封面 2" },
+  });
+  assert.equal(linked.coverUrl, "https://cdn.example.com/c.png");
+  assert.equal(linked.coverInline, false, "有外链时不该标成内嵌");
+});
+
+test("发布仓产出：各段长度封顶，避免一张 base64 撑爆草稿", () => {
+  const item = normalizePublishWarehouse({
+    copy: "x".repeat(9000),
+    tags: "y".repeat(3000),
+    cover: { prompt: "p".repeat(5000) },
+  });
+  assert.equal(item.copy.length, 4000);
+  assert.equal(item.tags.length, 1000);
+  assert.equal(item.coverPrompt.length, 1200);
+});
+
+test("发布仓产出：只有内嵌封面时如实说明「无外链、写不进飞书」", () => {
+  const cells = publishWarehouseCells({ cover: { dataUrl: "data:image/png;base64,AAAA" } });
+  assert.match(cells.cover, /内嵌图片/);
+  assert.match(cells.cover, /无法写入飞书/);
+});
+
+test("最终文案 markdown：带发布仓产出时追加三段，不带时保持原样", () => {
+  const withPublish = buildFinalDraftMarkdown({
+    titleDraft: "生成标题",
+    publishWarehouse: {
+      coverUrl: "https://cdn.example.com/c.png",
+      coverTitle: "封面 1",
+      copy: "不签合同，赔得更多",
+      tags: "#劳动法 #用工风险",
+    },
+  });
+  assert.match(withPublish, /## 发布封面/);
+  assert.match(withPublish, /https:\/\/cdn\.example\.com\/c\.png/);
+  assert.match(withPublish, /## 发布文案/);
+  assert.match(withPublish, /不签合同，赔得更多/);
+  assert.match(withPublish, /## 发布标签/);
+  assert.match(withPublish, /#劳动法 #用工风险/);
+
+  // 从内容生成页直接来最终编辑页（没经过发布仓）的草稿，导出的文档必须和以前完全一致。
+  const withoutPublish = buildFinalDraftMarkdown({ titleDraft: "生成标题" });
+  assert.doesNotMatch(withoutPublish, /发布封面/);
+  assert.doesNotMatch(withoutPublish, /发布文案/);
+});
+
+test("多维表格：新增发布封面/发布文案/发布标签三列，并对空值写空串", () => {
+  const names = BITABLE_FIELDS.map(field => field.field_name);
+  for (const expected of ["发布封面", "发布文案", "发布标签"]) {
+    assert.ok(names.includes(expected), `多维表格缺少列：${expected}`);
+  }
+
+  const [record] = finalDraftToBitableRecords({
+    titleDraft: "生成标题",
+    benchmarkVideos: [{ title: "对标视频标题" }],
+    publishWarehouse: {
+      coverUrl: "https://cdn.example.com/c.png",
+      coverTitle: "封面 1",
+      copy: "发布文案内容",
+      tags: "#劳动法",
+    },
+  });
+  assert.match(record.fields["发布封面"], /https:\/\/cdn\.example\.com\/c\.png/);
+  assert.equal(record.fields["发布文案"], "发布文案内容");
+  assert.equal(record.fields["发布标签"], "#劳动法");
+
+  // 没经过发布仓：三列必须是空串，不能是 undefined（否则飞书那边会当成缺字段）。
+  const [bare] = finalDraftToBitableRecords({ titleDraft: "只有标题", benchmarkVideos: [{ title: "对标视频标题" }] });
+  assert.equal(bare.fields["发布封面"], "");
+  assert.equal(bare.fields["发布文案"], "");
+  assert.equal(bare.fields["发布标签"], "");
 });

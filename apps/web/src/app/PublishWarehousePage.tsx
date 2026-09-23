@@ -243,6 +243,13 @@ export default function PublishWarehousePage() {
       setError("请先确认出图提示词");
       return;
     }
+    // ⚠️ 出图是全流程最慢的一步（按钮上就写着「较慢」），期间用户完全可能切到别的选题。
+    //    所以把「发起时」的选题与已选状态先定格：否则 await 回来读到的 activeTopicId 是切走之后的，
+    //    这张已经花过钱的图会落到**别的选题**上，而原选题什么都没留下。
+    const topicId = activeTopicId;
+    const baseSelection = activeSelection;
+    const baseCandidates = baseSelection?.cover?.candidates || [];
+    const titleStyle = baseSelection?.cover?.titleStyle || coverPlan?.titleStyle || null;
     setCoverImageLoading(title || prompt.slice(0, 20));
     setError("");
     try {
@@ -256,21 +263,20 @@ export default function PublishWarehousePage() {
       });
       const image = result.images?.[0];
       if (!image) throw new Error("出图接口没有返回图片");
-      const existing = activeSelection?.cover?.candidates || [];
       const candidates = [
-        ...existing,
+        ...baseCandidates,
         {
-          id: `cover-${existing.length + 1}`,
-          title: title || `封面 ${existing.length + 1}`,
+          id: `cover-${baseCandidates.length + 1}`,
+          title: title || `封面 ${baseCandidates.length + 1}`,
           keywords,
           prompt,
           image: { url: image.url || "", dataUrl: image.dataUrl || "" },
         },
       ];
-      await persist(activeTopicId, {
-        cover: { selectedId: candidates[candidates.length - 1].id, candidates, titleStyle: coverPlan?.titleStyle || null },
-        publishCopy: activeSelection?.publishCopy || null,
-        topicTags: activeSelection?.topicTags || null,
+      await persist(topicId, {
+        cover: { selectedId: candidates[candidates.length - 1].id, candidates, titleStyle },
+        publishCopy: baseSelection?.publishCopy || null,
+        topicTags: baseSelection?.topicTags || null,
       });
       setMessage(`已生成封面「${title}」`);
     } catch (requestError) {
@@ -591,6 +597,10 @@ export default function PublishWarehousePage() {
                   setActiveTopicIndex(index);
                   setCoverPlan(null);
                   setCoverPlanTopicId("");
+                  // 提示词是**按选题**写的，切走必须清掉 —— 否则它的内容与当前选题无关，
+                  // 而「确认提示词并生成封面」是唯一花钱的按钮，带着上一条的提示词出图等于白花钱。
+                  // （参考照片不跟着清：它是**按客户**的 IP 形象照，同一客户下本来就该复用。）
+                  setCoverPromptDraft("");
                   setCopyResult(null);
                   setTopicTags(null);
                 }}

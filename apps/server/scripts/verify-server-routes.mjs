@@ -1381,6 +1381,71 @@ try {
   });
   check([200, 201].includes(mgProfilePut.status), `  写客户 IP 档案 → 200/201（实际 ${mgProfilePut.status}）`, JSON.stringify(mgProfilePut.json).slice(0, 200));
 
+  // ⑧ ★★ 合并点名的关键链路：经理建任务 → 员工在「今日选题」读到 → 带上 customerId
+  //
+  // 为什么单独钉这一条（docs/MERGE-PROGRESS.md 的「必须闭环」里点过名）：
+  //   员工的「今日选题」要按**这个客户**的选题库给视频打标签，而 `customerId` 必须
+  //   从经理端建的任务一路传到员工端的读接口。合并时 `normalizeTask` 一度会把它丢掉，
+  //   症状是「员工只知道客户名、查不到库、标签全落待人工复核」——**不报错**。
+  //   所以这里把「建 → 读 → customerId 在」端到端钉住。
+  const smokeEmp = await db.collection("employees").findOne({ account: "smoke-employee-a" });
+  const smokeEmpId = String(smokeEmp?._id || "");
+  check(Boolean(smokeEmpId), "（前置）取到冒烟员工 A 的 id");
+
+  // 合作期必须**覆盖今天**，否则 /api/tasks/today 的窗口条件匹配不到（这是刻意设计的可见性规则）。
+  const today = new Date();
+  const day = 24 * 60 * 60 * 1000;
+  const windowPeriod = {
+    start: new Date(today.getTime() - 3 * day).toISOString().slice(0, 10),
+    end: new Date(today.getTime() + 3 * day).toISOString().slice(0, 10),
+  };
+
+  const chainCustomer = await mgmt("/customers", {
+    method: "POST",
+    body: JSON.stringify({ name: "链路冒烟客户", occupation: "劳动法律师", contentNeeds: "讲清新规" }),
+  });
+  const chainCustomerId = String(chainCustomer.json?._id || "");
+  check(chainCustomer.status === 201 && Boolean(chainCustomerId), "（前置）经理端建「链路冒烟客户」");
+
+  const chainTask = await mgmt("/tasks", {
+    method: "POST",
+    body: JSON.stringify({
+      customerId: chainCustomerId,
+      customerName: "链路冒烟客户",
+      platformName: "抖音",
+      ownerId: smokeEmpId,
+      collaborationPeriod: windowPeriod,
+      contentRequirements: ["口播"],
+    }),
+  });
+  check(chainTask.status === 201, `★★ 经理给该员工建任务（合作期覆盖今天）→ 201（实际 ${chainTask.status}）`,
+    JSON.stringify(chainTask.json).slice(0, 250));
+
+  // ★ 用员工身份读「今日任务」——这是前端拿 customerId 的唯一入口
+  const todayRes = await empGet("/api/tasks/today", employeeA);
+  const todayJson = todayRes.json ?? todayRes;
+  const todayTasks = Array.isArray(todayJson?.data) ? todayJson.data : [];
+  const chainSeen = todayTasks.find(item => String(item?._id) === String(chainTask.json?._id));
+  check(Boolean(chainSeen), "★★ 员工在「今日任务」里读到了这条任务（经理→员工链路通）",
+    `员工看到 ${todayTasks.length} 条；状态 ${todayRes.status ?? "?"}`);
+
+  // ★★ 最关键的一条：customerId 必须活着传到员工端（少了它 → 标签全靠猜）
+  check(Boolean(chainSeen?.customerId),
+    "★★★ 任务带着 customerId 传到员工端（少了它，员工无法读取该客户的选题库，标签会静默失效）",
+    `实际 customerId=${JSON.stringify(chainSeen?.customerId)}`);
+  check(String(chainSeen?.customerId) === chainCustomerId,
+    "  且 customerId 与经理端建的那个客户一致（没串到别的客户）");
+  check(chainSeen?.customerName === "链路冒烟客户", "  客户名也一并带过来了");
+
+  // ★ 员工能拿这个 customerId 读到选题库（标签链路的下一跳）
+  const libRes = await empGet(`/api/topic-libraries?customerId=${chainCustomerId}&view=categories`, employeeA);
+  check([200, 404].includes(libRes.status ?? 200),
+    `  员工用该 customerId 请求选题库词典 → 200/404（无库时 404 属正常，实际 ${libRes.status}）`);
+
+  // 清理这条链路造的数据
+  await mgmt(`/tasks/${chainTask.json?._id}`, { method: "DELETE" });
+  await mgmt(`/customers/${chainCustomerId}`, { method: "DELETE" });
+
   // ⑧ 清理：删任务 → 删员工 → 删客户（顺带验证删除链是通的）
   for (const id of [mgTaskId, ...(mgTaskBatch.json || []).map(item => String(item._id))]) {
     if (id) await mgmt(`/tasks/${id}`, { method: "DELETE" });

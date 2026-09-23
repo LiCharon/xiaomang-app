@@ -21,7 +21,19 @@ import { normalizePublishCopy, normalizeTopicTags } from "../api/_lib/publishWar
  */
 
 test("phase 清单与两套后端路由保持一致（含出图那个花钱的 phase）", () => {
-  assert.deepEqual(PUBLISH_PHASES, ["cover-plan", "cover-image", "publish-copy", "account-tags", "topic-tags"]);
+  assert.deepEqual(PUBLISH_PHASES, [
+    "cover-plan",
+    // 封面基底第一步：拆解用户上传的对标封面图（视觉模型，不出图）。
+    "cover-base-analysis",
+    // 账号级：只按账号规划/人设定位出 IP 形象照的提示词（topic 传空，不被选题影响）。
+    "cover-portrait-plan",
+    // 纯计算（不调模型）：按基底标题样式给每个候选标题算字号与行数。
+    "cover-title-metrics",
+    "cover-image",
+    "publish-copy",
+    "account-tags",
+    "topic-tags",
+  ]);
 });
 
 test("选题入参归一化：只留 Agent 用得到的字段，长文本截断", () => {

@@ -146,6 +146,12 @@ const child = spawn(process.execPath, ["src/index.js"], {
     AGENT_RETRY_ATTEMPTS: "0",
     AGENT_RETRY_BUDGET_MS: "3000",
     DEEPSEEK_REQUEST_TIMEOUT_MS: "5000",
+    // 🔴 **出图密钥必须显式清空**：出图是全项目唯一花钱的步骤，而本机 `.env` 里是真配了密钥的
+    //    （两套变量名都认）。不清空的话，下面「缺密钥 → 501」那条断言会**真的去打网关出图**，
+    //    既花钱又不确定（网关拒绝时返回 403，断言就假失败 —— 实测撞到过）。
+    //    清空后 isImageGenerationConfigured() 恒为 false，501 变成确定结果，且零成本。
+    XXCAPI_API_KEY: "",
+    XINGCHEN_API_KEY: "",
   },
   stdio: ["ignore", "pipe", "pipe"],
 });
@@ -1126,17 +1132,15 @@ try {
   check(noPhase.status === 400, `★ 发布 Agent 缺 phase → 400（实际 ${noPhase.status}）`);
 
   // 出图阶段没配密钥时必须回**可读的 501**，而不是 500 —— 前端据此提示「配好密钥即可出图」。
+  // 出图密钥在起服务时已被显式清空，所以这里**必须**是 501：
+  // 出现 200 就说明真的打网关出图了（花钱，且网关拒绝时会变 403 假失败）。
   const coverImageNoKey = await empPublish("/api/agent/publish", {
     method: "POST",
     body: JSON.stringify({ phase: "cover-image", prompt: "一张测试封面" }),
   });
   const coverImageJson = await coverImageNoKey.json().catch(() => null);
-  check([501, 200].includes(coverImageNoKey.status), `★ 出图阶段缺密钥 → 501 或已配置下 200（实际 ${coverImageNoKey.status}）`);
-  if (coverImageNoKey.status === 501) {
-    check(String(coverImageJson?.error || "").includes("XXCAPI_API_KEY"), "  错误信息点明缺哪个配置项");
-  } else {
-    check(Boolean(coverImageJson?.images?.length) || Boolean(coverImageJson?.error), "  已配置时要么出图、要么回可读错误");
-  }
+  check(coverImageNoKey.status === 501, `★ 出图阶段缺密钥 → 501（实际 ${coverImageNoKey.status}；200 意味着真的花钱出图了）`);
+  check(String(coverImageJson?.error || "").includes("XXCAPI_API_KEY"), "  错误信息点明缺哪个配置项");
 
   // 缺提示词必须 400（出图很贵，不能拿空提示词去打网关）。
   const coverImageNoPrompt = await empPublish("/api/agent/publish", { method: "POST", body: JSON.stringify({ phase: "cover-image" }) });
@@ -1505,6 +1509,73 @@ try {
   for (const id of [publishDraft.json?.item?.id, inlineDraft.json?.item?.id]) {
     if (id) await fetch(`${BASE}/api/final-drafts/${encodeURIComponent(id)}`, { method: "DELETE", headers: { Cookie: employeeA.cookie } });
   }
+
+  // ★ 封面基底与三类定义 —— 3.1 拆成「账号级基底 / 每条出封面」两层靠的就是它们。
+  const tiersRes = await empGet("/api/publish-warehouse?resource=cover-tiers", employeeA);
+  const tierItems = Array.isArray(tiersRes.json?.items) ? tiersRes.json.items : [];
+  check(tiersRes.status === 200 && tierItems.length === 3,
+    `★ 三类封面的定义可读（一类不用 agent、二类只用背景、三类两个都用）→ ${tierItems.length} 类`,
+    JSON.stringify(tierItems.map(item => item.id)));
+  const tierById = Object.fromEntries(tierItems.map(item => [item.id, item]));
+  check(tierById.standard?.needsPortrait === false
+    && tierById.semiCustom?.canGeneratePortrait === false
+    && tierById.custom?.canGeneratePortrait === true,
+    "  三类的差异如实反映在 needsPortrait / canGeneratePortrait 上");
+
+  const badTier = await empPost("/api/publish-warehouse?resource=cover-base", {
+    customerId: SMOKE_CUSTOMER_ID,
+    tier: "bogus",
+  }, employeeA);
+  check(badTier.status === 400,
+    `★ 无效封面类型被拒 → 400（不许静默落一个默认类型，实际 ${badTier.status}）`,
+    JSON.stringify(badTier.json).slice(0, 160));
+
+  const savedBase = await empPost("/api/publish-warehouse?resource=cover-base", {
+    customerId: SMOKE_CUSTOMER_ID,
+    customerName: "冒烟客户",
+    tier: "custom",
+    sourceImage: { dataUrl: "data:image/png;base64,AAAA" },
+    analysis: { artStyle: "写实照片", reservedAreas: ["上方：标题位"] },
+    titleStyle: { fontFamily: "粗黑体", fontSizePx: 60, minFontSizePx: 40, maxLines: 2 },
+    backgroundTemplate: { url: "https://cdn.example.com/bg.png" },
+    portrait: { prompt: "紫色西装", image: { url: "https://cdn.example.com/face.png" } },
+  }, employeeA);
+  check(savedBase.status === 200 && savedBase.json?.item?.tier === "custom",
+    `★ 保存封面基底 → 200（实际 ${savedBase.status}）`,
+    JSON.stringify(savedBase.json).slice(0, 200));
+  check(savedBase.json?.item?.titleStyle?.fontSizePx === 60 && savedBase.json?.item?.titleStyle?.minFontSizePx === 40,
+    "  标题样式的字号参数（基准 / 下限 / 行数）按数值存下来了");
+
+  const readBase = await empGet(`/api/publish-warehouse?resource=cover-base&customerId=${SMOKE_CUSTOMER_ID}`, employeeA);
+  check(readBase.json?.item?.tier === "custom"
+    && readBase.json?.item?.portrait?.image?.url === "https://cdn.example.com/face.png"
+    && readBase.json?.item?.backgroundTemplate?.url === "https://cdn.example.com/bg.png",
+    "★ 读回封面基底完整（人像 / 背景模板 / 标题样式都在）",
+    JSON.stringify(readBase.json?.item).slice(0, 200));
+
+  const baseAsB = await empGet(`/api/publish-warehouse?resource=cover-base&customerId=${SMOKE_CUSTOMER_ID}`, employeeB);
+  check(baseAsB.json?.item === null,
+    "★★ 封面基底按用户隔离：员工 B 读到 null（看不到 A 的基底）");
+
+  // 字号自适应是纯计算（不调模型）：长标题收缩、短标题保持基准。
+  const metrics = await empPost("/api/agent/publish", {
+    phase: "cover-title-metrics",
+    titles: ["短标题", "这是一个明显长很多很多很多很多很多很多很多很多的标题需要两行以上才放得下"],
+    titleStyle: { fontSizePx: 64, minFontSizePx: 36, maxLines: 2 },
+  }, employeeA);
+  const metricItems = Array.isArray(metrics.json?.items) ? metrics.json.items : [];
+  check(metrics.status === 200 && metricItems.length === 2,
+    `★ 标题字号由后端算（一类只换标题靠它）→ 200（实际 ${metrics.status}）`,
+    JSON.stringify(metrics.json).slice(0, 160));
+  check(metricItems[0]?.fontSizePx === 64 && metricItems[1]?.fontSizePx < 64,
+    "★ 长标题自动收缩、短标题保持基准字号",
+    `短=${metricItems[0]?.fontSizePx} 长=${metricItems[1]?.fontSizePx}`);
+
+  const delBase = await fetch(`${BASE}/api/publish-warehouse?resource=cover-base&customerId=${SMOKE_CUSTOMER_ID}`, {
+    method: "DELETE",
+    headers: { Cookie: employeeA.cookie },
+  });
+  check(delBase.status === 200, `  清空封面基底 → 200（实际 ${delBase.status}）`);
 
   // ⑧ 清理：删任务 → 删员工 → 删客户（顺带验证删除链是通的）
   for (const id of [mgTaskId, ...(mgTaskBatch.json || []).map(item => String(item._id))]) {

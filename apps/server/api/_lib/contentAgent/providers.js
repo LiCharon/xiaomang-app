@@ -1559,21 +1559,38 @@ const extractAudioFromStream = async (inputStream, config, options = {}) => {
   });
 };
 
-const callDoubaoVideoUnderstanding = async (videoUrl, config, options = {}) => {
+/**
+ * 豆包多模态共用的鉴权头。
+ *
+ * 视频理解与图片拆解走的是同一个 endpoint、同一套凭据，头怎么拼只能有一份 ——
+ * 两边各写一遍的话，换 header 名时必漏一个（那种错不会报错，只会 401）。
+ */
+const doubaoMultimodalHeaders = config => {
   if (!config.doubaoVideoEndpoint || !config.doubaoVideoApiKey) {
-    throw new AgentError("Missing Doubao video understanding endpoint or credentials", {
+    throw new AgentError("Missing Doubao multimodal endpoint or credentials", {
       code: "DOUBAO_VIDEO_CREDENTIALS_MISSING",
     });
   }
-
-  const headers = {
-    "Content-Type": "application/json",
-  };
+  const headers = { "Content-Type": "application/json" };
   if (config.doubaoVideoAuthHeader.toLowerCase() === "authorization") {
     headers.Authorization = `Bearer ${config.doubaoVideoApiKey}`;
   } else {
     headers[config.doubaoVideoAuthHeader] = config.doubaoVideoApiKey;
   }
+  return headers;
+};
+
+/** 豆包多模态返回的正文（兼容 choices / output_text / result.text 几种形状）。 */
+const doubaoMultimodalText = data => cleanModelText(
+  data?.choices?.[0]?.message?.content ||
+    data?.output_text ||
+    data?.text ||
+    data?.result?.text ||
+    "",
+);
+
+const callDoubaoVideoUnderstanding = async (videoUrl, config, options = {}) => {
+  const headers = doubaoMultimodalHeaders(config);
 
   const { data } = await fetchJson(config.doubaoVideoEndpoint, {
     method: "POST",
@@ -1598,17 +1615,62 @@ const callDoubaoVideoUnderstanding = async (videoUrl, config, options = {}) => {
     }),
   });
 
-  const text = cleanModelText(
-    data?.choices?.[0]?.message?.content ||
-      data?.output_text ||
-      data?.text ||
-      data?.result?.text ||
-      "",
-  );
+  const text = doubaoMultimodalText(data);
 
   if (!text) {
     throw new AgentError("Doubao video understanding returned empty text", {
       code: "DOUBAO_VIDEO_EMPTY",
+      details: data,
+    });
+  }
+  return text;
+};
+
+/**
+ * 豆包多模态：**图片**理解（对标封面拆解用）。
+ *
+ * 与视频理解同一条链路、同一套凭据，只是 content 里换成 `image_url`。
+ * 2026-09-23 实测：同一个 endpoint + `doubao-seed-2-0-mini` 收 base64 dataURL 返回 200，
+ * 且描述准确（测试卡的彩条、渐变带、弧形里的数字都认出来了）——
+ * 所以「用户上传对标封面 → 拆解画风/元素/排版/视觉风格」**不需要新增供应商或密钥**。
+ *
+ * @param imageUrl  http(s) 链接，或 `data:image/...;base64,...`
+ * @param prompt    拆解提示词（见 prompts.js 的 BENCHMARK_COVER_ANALYSIS_PROMPT）
+ */
+export const understandDoubaoImage = async (imageUrl, prompt, config, options = {}) => {
+  const target = String(imageUrl || "").trim();
+  if (!target) {
+    throw new AgentError("Missing image for understanding", { code: "DOUBAO_IMAGE_MISSING" });
+  }
+  const headers = doubaoMultimodalHeaders(config);
+
+  const { data } = await fetchJson(config.doubaoVideoEndpoint, {
+    method: "POST",
+    timeoutMs: config.requestTimeoutMs,
+    retries: config.apiRetryAttempts,
+    retryBaseDelayMs: config.apiRetryBaseDelayMs,
+    logger: options.logger,
+    interfaceName: "doubao:image-understanding",
+    headers,
+    body: JSON.stringify({
+      model: config.doubaoVideoModel,
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: String(prompt || "") },
+            { type: "image_url", image_url: { url: target } },
+          ],
+        },
+      ],
+      temperature: 0.1,
+    }),
+  });
+
+  const text = doubaoMultimodalText(data);
+  if (!text) {
+    throw new AgentError("Doubao image understanding returned empty text", {
+      code: "DOUBAO_IMAGE_EMPTY",
       details: data,
     });
   }

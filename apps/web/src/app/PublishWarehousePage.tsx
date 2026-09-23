@@ -8,22 +8,34 @@ import { parseApiError } from "./reportApi";
 import { clearCachedFinalDrafts, readCachedFinalDrafts } from "./finalDraftCache";
 import {
   ACCOUNT_TAG_ANGLES,
+  analyzeBenchmarkCover,
   clearPublishSelections,
+  deleteCoverBase,
   generateCoverImage,
+  getCoverBase,
+  listCoverTiers,
   listPublishSelections,
   requestAccountTags,
   requestCoverPlan,
+  requestCoverTitleMetrics,
+  requestPortraitPlan,
   requestPublishCopy,
   requestTopicTags,
   saveAccountTags,
+  saveCoverBase,
   savePublishSelection,
 } from "./publishWarehouseApi";
 import type {
   AccountTagLibrary,
+  CoverAnalysis,
+  CoverBase,
   CoverPlan,
+  CoverTier,
   PublishCopyResult,
   PublishSelection,
   PublishTopicLike,
+  TitleMetric,
+  TitleStyleTemplate,
   TopicTagsResult,
 } from "./publishWarehouseApi";
 
@@ -71,6 +83,50 @@ const toPreview = (text: string, max = 90) => {
 const toggle = (list: string[], value: string) =>
   list.includes(value) ? list.filter(item => item !== value) : [...list, value];
 
+/** 标题样式模板的空壳（用户还没调过时给输入框一个可编辑的起点）。 */
+const emptyTitleStyle = (): TitleStyleTemplate => ({
+  fontFamily: "",
+  color: "",
+  position: "bottom",
+  alignment: "",
+  note: "",
+  fontSizePx: 64,
+  minFontSizePx: 36,
+  maxLines: 2,
+});
+
+/**
+ * 把拆解结果拼成一份**可改的**背景模板提示词。
+ *
+ * 这只是给用户一个起点（拆解出的四个角度 + 留白），不是业务规则 ——
+ * 提示词本来就是给人改的，所以在前端组装，不占后端一次调用。
+ */
+const composeTemplatePrompt = (analysis: CoverAnalysis | null) => {
+  if (!analysis) return "";
+  const lines = [
+    analysis.artStyle && `画风：${analysis.artStyle}`,
+    analysis.elements && `元素：${analysis.elements}`,
+    analysis.layout && `排版：${analysis.layout}`,
+    analysis.visualStyle && `视觉风格：${analysis.visualStyle}`,
+    analysis.reservedAreas.length > 0 && `留白区域（不要放内容）：${analysis.reservedAreas.join("；")}`,
+  ].filter(Boolean);
+  if (lines.length === 0) return "";
+  return [
+    "模仿这张对标封面的风格，生成一张竖版 3:4 的封面背景模板。",
+    "只画背景，不要出现任何文字。",
+    ...lines,
+  ].join("\n");
+};
+
+/** 基底的上次保存时间（到秒，与报告列表同一条口径 —— 同一天存过两版要分得清）。 */
+const formatMetTime = (value: string) => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  const pad = (input: number) => String(input).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+};
+
 export default function PublishWarehousePage() {
   const navigate = useNavigate();
 
@@ -98,8 +154,34 @@ export default function PublishWarehousePage() {
   const [coverPlanTopicId, setCoverPlanTopicId] = useState("");
   const [coverLoading, setCoverLoading] = useState(false);
   const [coverImageLoading, setCoverImageLoading] = useState("");
-  const [coverPromptDraft, setCoverPromptDraft] = useState("");
-  const [referenceDataUrl, setReferenceDataUrl] = useState("");
+
+  // 3.1 内部两个子页：封面基底（账号级）/ 每条出封面（选题级）。
+  // 分开的理由是这两层的**资产生命周期完全不同**：基底一次确认长期复用，
+  // 每条只决定这一期的背景/人像表情/标题。混在一屏会逼用户每换一条选题就重做一次基底。
+  const [coverSubTab, setCoverSubTab] = useState<"base" | "perTopic">("base");
+  const [coverTiers, setCoverTiers] = useState<CoverTier[]>([]);
+  const [coverBase, setCoverBase] = useState<CoverBase | null>(null);
+  const [coverBaseLoading, setCoverBaseLoading] = useState(false);
+  const [coverBaseSaving, setCoverBaseSaving] = useState(false);
+  const [analysisLoading, setAnalysisLoading] = useState(false);
+  const [portraitLoading, setPortraitLoading] = useState(false);
+  const [baseImageLoading, setBaseImageLoading] = useState("");
+  const [baseTier, setBaseTier] = useState("semiCustom");
+  const [baseSourceImage, setBaseSourceImage] = useState<{ url: string; dataUrl: string } | null>(null);
+  const [baseAnalysis, setBaseAnalysis] = useState<CoverAnalysis | null>(null);
+  const [baseTitleStyle, setBaseTitleStyle] = useState<TitleStyleTemplate | null>(null);
+  const [baseBackgroundTemplate, setBaseBackgroundTemplate] = useState<{ url: string; dataUrl: string } | null>(null);
+  const [baseBackgroundPrompt, setBaseBackgroundPrompt] = useState("");
+  const [basePortraitPrompt, setBasePortraitPrompt] = useState("");
+  const [basePortraitBasis, setBasePortraitBasis] = useState("");
+  const [basePortraitImage, setBasePortraitImage] = useState<{ url: string; dataUrl: string } | null>(null);
+  // 逐条的标题字号（后端算）——按「这条选题的标题」取。
+  const [titleMetrics, setTitleMetrics] = useState<TitleMetric[]>([]);
+  // 层二（每条出封面）的输入：这一期要用的标题 / 背景提示词 / 人像表情。
+  // 它们是「这次要出的图」的输入，还不是候选，所以不写进 selection。
+  const [perTopicTitle, setPerTopicTitle] = useState("");
+  const [perTopicBackgroundPrompt, setPerTopicBackgroundPrompt] = useState("");
+  const [perTopicExpression, setPerTopicExpression] = useState("");
 
   // 3.2 发布文案
   const [copyResult, setCopyResult] = useState<PublishCopyResult | null>(null);
@@ -190,6 +272,218 @@ export default function PublishWarehousePage() {
     return () => { active = false; };
   }, [customerId]);
 
+  /**
+   * 把读回来的封面基底灌进草稿态（首次进入、或保存后回读都走它）。
+   *
+   * 三类的资产**全部保留**、不按类型清空：用户可能在一类里配了模板、后来改选二类，
+   * 再切回一类时那份模板还在（否则切一次类型就得重传一遍图）。
+   */
+  const applyCoverBase = useCallback((base: CoverBase | null) => {
+    setCoverBase(base);
+    if (!base) return;
+    setBaseTier(base.tier || "semiCustom");
+    setBaseSourceImage(base.sourceImage || null);
+    setBaseAnalysis(base.analysis && (base.analysis.artStyle || base.analysis.summary) ? base.analysis : null);
+    setBaseTitleStyle(base.titleStyle || null);
+    setBaseBackgroundTemplate(base.backgroundTemplate || null);
+    setBaseBackgroundPrompt(base.backgroundPrompt || "");
+    setBasePortraitPrompt(base.portrait?.prompt || "");
+    setBasePortraitBasis(base.portrait?.basis || "");
+    setBasePortraitImage(base.portrait?.image || null);
+  }, []);
+
+  // 载入三类定义（后端 `COVER_TIERS`）与这个客户的封面基底。
+  useEffect(() => {
+    let active = true;
+    listCoverTiers()
+      .then(items => { if (active && items.length > 0) setCoverTiers(items); })
+      .catch(() => { /* 读不到就退回只显示当前类型，不阻塞页面 */ });
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!customerId) return;
+    let active = true;
+    setCoverBaseLoading(true);
+    getCoverBase(customerId)
+      .then(base => { if (active) applyCoverBase(base); })
+      .catch(() => { /* 没配过就静默 */ })
+      .finally(() => { if (active) setCoverBaseLoading(false); });
+    return () => { active = false; };
+  }, [customerId, applyCoverBase]);
+
+  // 当前类型（读不到定义时先用一个最小兜底，保证渲染不依赖网络）。
+  const activeTier: CoverTier | null = useMemo(
+    () => coverTiers.find(item => item.id === baseTier) || null,
+    [coverTiers, baseTier],
+  );
+
+  /**
+   * 这一条选题能不能出封面：缺什么就如实列出来（并在界面上把出口指回「封面基底」）。
+   *
+   * ⚠️ 一类没有背景模板（它的模板就是那张固定封面图），所以「模板」的判定要按类型分岔，
+   *    统一写成「必须有 backgroundTemplate」会让一类永远显示缺东西。
+   */
+  const coverReadiness = useMemo(() => {
+    const missing: string[] = [];
+    if (!activeTier) missing.push("封面类型");
+    const template = baseBackgroundTemplate || baseSourceImage;
+    if (activeTier?.needsBackgroundTemplate) {
+      if (!baseBackgroundTemplate) missing.push("背景风格模板");
+    } else if (activeTier && !template) {
+      missing.push("固定封面模板");
+    }
+    if (activeTier?.needsPortrait && !basePortraitImage) missing.push("IP 人像");
+    return { ok: missing.length === 0, missing };
+  }, [activeTier, baseBackgroundTemplate, baseSourceImage, basePortraitImage]);
+
+  /** 基底里的图上传（对标封面 / 背景模板 / IP 人像共用一套读取逻辑）。 */
+  const handleBaseImageUpload = (file: File | null, apply: (image: { url: string; dataUrl: string }) => void) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("只能上传图片");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => apply({ url: "", dataUrl: String(reader.result || "") });
+    reader.onerror = () => setError("图片读取失败");
+    reader.readAsDataURL(file);
+  };
+
+  /** 拆解上传的对标封面（视觉模型，**不出图**）。 */
+  const runCoverAnalysis = async () => {
+    if (!baseSourceImage) {
+      setError("请先上传一张对标封面图");
+      return;
+    }
+    setAnalysisLoading(true);
+    setError("");
+    try {
+      const result = await analyzeBenchmarkCover({ image: baseSourceImage });
+      setBaseAnalysis(result.analysis);
+      setBaseTitleStyle(result.titleStyle);
+      // 拆完自动填一份可改的模板提示词（用户已经改过就不覆盖他的输入）。
+      setBaseBackgroundPrompt(prev => prev.trim() ? prev : composeTemplatePrompt(result.analysis));
+      if (!result.imageGenerationAvailable) {
+        setError("服务器未配置出图密钥，暂时只能看拆解结果，配好后即可生成背景模板。");
+      } else {
+        setMessage("已拆解对标封面：画风 / 元素 / 排版 / 视觉风格 + 留白区域。");
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "对标封面拆解失败");
+    } finally {
+      setAnalysisLoading(false);
+    }
+  };
+
+  /** 出 IP 形象照的提示词建议（账号级）—— 人工改过之后才出图。 */
+  const runPortraitPlan = async () => {
+    setPortraitLoading(true);
+    setError("");
+    try {
+      const result = await requestPortraitPlan({ customerId });
+      setBasePortraitPrompt(String(result.ipPortrait?.prompt || ""));
+      setBasePortraitBasis(String(result.ipPortrait?.basis || ""));
+      setMessage("已给出 IP 形象照的提示词建议，确认后再出图。");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "IP 形象照提示词生成失败");
+    } finally {
+      setPortraitLoading(false);
+    }
+  };
+
+  /** 基底里的一次出图（背景风格模板 / IP 形象照）。唯一花钱的动作，必须点了才走。 */
+  const makeBaseImage = async (kind: "backgroundTemplate" | "portrait") => {
+    const prompt = kind === "portrait" ? basePortraitPrompt.trim() : baseBackgroundPrompt.trim();
+    if (!prompt) {
+      setError(kind === "portrait" ? "请先确认 IP 形象照的提示词" : "请先确认背景模板的提示词");
+      return;
+    }
+    setBaseImageLoading(kind);
+    setError("");
+    try {
+      // 背景模板拿对标封面当参考图（模仿它的风格）；IP 形象照拿客户参考照片当参考图。
+      const referenceImages = kind === "backgroundTemplate"
+        ? (baseSourceImage ? [baseSourceImage] : [])
+        : (basePortraitImage ? [basePortraitImage] : []);
+      const result = await generateCoverImage({
+        prompt,
+        referenceImages,
+        size: "2K",
+        quality: "high",
+        aspectRatio: "3:4",
+      });
+      const image = result.images?.[0];
+      if (!image) throw new Error("出图接口没有返回图片");
+      const ref = { url: image.url || "", dataUrl: image.dataUrl || "" };
+      if (kind === "portrait") {
+        setBasePortraitImage(ref);
+        setMessage("已生成 IP 形象照，确认后保存基底。");
+      } else {
+        setBaseBackgroundTemplate(ref);
+        setMessage("已生成背景风格模板，确认后保存基底。");
+      }
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "出图失败");
+    } finally {
+      setBaseImageLoading("");
+    }
+  };
+
+  /** 保存封面基底（账号级，幂等 upsert）。 */
+  const persistCoverBase = async (nextTier = baseTier) => {
+    if (!customerId) {
+      setError("没有读到客户信息，无法保存封面基底");
+      return;
+    }
+    setCoverBaseSaving(true);
+    setError("");
+    try {
+      const saved = await saveCoverBase({
+        customerId,
+        customerName: String(activeTask?.customerName || ""),
+        tier: nextTier,
+        sourceImage: baseSourceImage,
+        analysis: baseAnalysis,
+        titleStyle: baseTitleStyle,
+        backgroundTemplate: baseBackgroundTemplate,
+        backgroundPrompt: baseBackgroundPrompt,
+        portrait: { prompt: basePortraitPrompt, basis: basePortraitBasis, image: basePortraitImage },
+      });
+      applyCoverBase(saved);
+      setMessage("封面基底已保存（账号级，之后每期复用）");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "封面基底保存失败");
+    } finally {
+      setCoverBaseSaving(false);
+    }
+  };
+
+  const clearCoverBase = async () => {
+    if (!customerId) return;
+    setCoverBaseSaving(true);
+    setError("");
+    try {
+      await deleteCoverBase(customerId);
+      applyCoverBase(null);
+      setBaseTier("semiCustom");
+      setBaseSourceImage(null);
+      setBaseAnalysis(null);
+      setBaseTitleStyle(null);
+      setBaseBackgroundTemplate(null);
+      setBaseBackgroundPrompt("");
+      setBasePortraitPrompt("");
+      setBasePortraitBasis("");
+      setBasePortraitImage(null);
+      setTitleMetrics([]);
+      setMessage("封面基底已清空，可以重新选类型");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "清空封面基底失败");
+    } finally {
+      setCoverBaseSaving(false);
+    }
+  };
+
   const persist = useCallback(async (topicId: string, patch: Partial<PublishSelection>) => {
     if (!customerId || !topicId) return;
     setSavingTopicId(topicId);
@@ -227,7 +521,8 @@ export default function PublishWarehousePage() {
       });
       setCoverPlan(result.plan);
       setCoverPlanTopicId(String(topic.id || ""));
-      setCoverPromptDraft(String(result.plan?.backgrounds?.[0]?.prompt || result.plan?.ipPortrait?.prompt || ""));
+      // 出方案顺带把第一个背景候选填进「这一期的背景」输入框，用户可直接改（一类的候选提示词不上这儿用）。
+      setPerTopicBackgroundPrompt(prev => prev.trim() ? prev : String(result.plan?.backgrounds?.[0]?.prompt || ""));
       if (!result.imageGenerationAvailable) {
         setError("服务器未配置出图密钥（XXCAPI_API_KEY），可以先用提示词，配好后即可出图。");
       }
@@ -250,13 +545,21 @@ export default function PublishWarehousePage() {
     const baseSelection = activeSelection;
     const baseCandidates = baseSelection?.cover?.candidates || [];
     const titleStyle = baseSelection?.cover?.titleStyle || coverPlan?.titleStyle || null;
+    // 出图期间用户可能换类型/换基底，所以这一刻也定格。
+    const tier = baseTier;
+    // 参考图同样定格：背景风格模板（模仿风格）+ IP 人像（二类同一张脸、三类换表情）。
+    // ⚠️ 以前读的是页面上的一个临时上传（`referenceDataUrl`），那个入口删掉后就恒为空 ——
+    //    等于「参考图编辑」这条链静默失效。现在改为读封面基底，跟着类型走。
+    const generationRefs = [baseBackgroundTemplate, basePortraitImage]
+      .filter(Boolean)
+      .map(item => ({ url: item?.url || "", dataUrl: item?.dataUrl || "" }))
+      .filter(item => item.url || item.dataUrl);
     setCoverImageLoading(title || prompt.slice(0, 20));
     setError("");
     try {
       const result = await generateCoverImage({
         prompt,
-        // 用户上传了参考照片就走参考图编辑（文档要求的「结合现有参考照片」）。
-        referenceImages: referenceDataUrl ? [{ dataUrl: referenceDataUrl }] : [],
+        referenceImages: generationRefs,
         size: "2K",
         quality: "high",
         aspectRatio: "3:4",
@@ -271,6 +574,7 @@ export default function PublishWarehousePage() {
           keywords,
           prompt,
           image: { url: image.url || "", dataUrl: image.dataUrl || "" },
+          tier,
         },
       ];
       await persist(topicId, {
@@ -286,9 +590,99 @@ export default function PublishWarehousePage() {
     }
   };
 
+  /**
+   * 取候选标题的字号（后端算 —— 规则只在一处，§6.3⑬ 同一条纪律）。
+   * 一次把「这条选题的标题 + 复用的标题 + 已出过的候选标题」都问掉，避免逐字请求。
+   */
+  const loadTitleMetrics = useCallback(async (extraTitles: string[]) => {
+    const style = activeSelection?.cover?.titleStyle || baseTitleStyle;
+    if (!style) return;
+    const titles = Array.from(new Set([
+      String(activeTopic?.title || "").trim(),
+      ...extraTitles.map(item => String(item || "").trim()),
+    ].filter(Boolean))).slice(0, 12);
+    if (titles.length === 0) return;
+    try {
+      const result = await requestCoverTitleMetrics({ titles, titleStyle: style });
+      setTitleMetrics(Array.isArray(result?.items) ? result.items : []);
+    } catch {
+      // 算不出来只是预览字号不准，不该打断出封面这条主流程。
+      setTitleMetrics([]);
+    }
+  }, [activeSelection, baseTitleStyle, activeTopic]);
+
+  /**
+   * 一类的「出封面」**不调出图**：模板（固定人像 + 固定背景）已经在基底里确认好了，
+   * 这一期只换标题文字 —— 文字由前端按标题样式叠加，所以这一步不花钱，也就没有
+   * 「确认提示词再出图」那道闸门。
+   */
+  const makeStandardCover = async (title: string) => {
+    const template = baseBackgroundTemplate || baseSourceImage;
+    if (!template) {
+      setError("请先在「封面基底」上传固定封面模板");
+      return;
+    }
+    const text = title.trim();
+    if (!text) {
+      setError("标题不能为空");
+      return;
+    }
+    const topicId = activeTopicId;
+    const baseSel = activeSelection;
+    const existing = baseSel?.cover?.candidates || [];
+    // 同一模板下换个标题就是新的一条候选；标题相同则替换（不堆重复项）。
+    const id = `std-${text}`.slice(0, 80);
+    const candidates = [
+      ...existing.filter(item => item.id !== id),
+      { id, title: text, keywords: [], prompt: "", image: template, tier: baseTier },
+    ];
+    try {
+      await persist(topicId, {
+        cover: { selectedId: id, candidates, titleStyle: baseTitleStyle },
+        publishCopy: baseSel?.publishCopy || null,
+        topicTags: baseSel?.topicTags || null,
+      });
+      setMessage(`已生成封面「${text}」（模板 + 标题，未调用出图）`);
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "生成封面失败");
+    }
+  };
+
   /** 把标题以选定的样式叠加到封面上（纯 CSS，不依赖后端出字——模型写字会写成乱码）。 */
-  const coverTitleStyle = activeSelection?.cover?.titleStyle || coverPlan?.titleStyle || null;
+  const coverTitleStyle = activeSelection?.cover?.titleStyle || coverPlan?.titleStyle || baseTitleStyle;
   const overlayTitle = String(reuseTitles[0] || activeTopic?.title || "").trim();
+
+  /**
+   * 候选封面上的文字。
+   *
+   * 一类（标准模板）的候选**本身就是某一期的标题**，所以直接用它；
+   * 二/三类的候选是生成图，`title` 只是「封面 N」这样的标签，文字用这条选题的标题。
+   */
+  const overlayTextFor = (candidate: CoverCandidate) => (
+    String(candidate.tier || "") === "standard" && candidate.title ? candidate.title : overlayTitle
+  );
+
+  /** 后端算好的字号（取不到就退回模板基准，保持预览可读）。 */
+  const fontSizeFor = (text: string) => {
+    const hit = titleMetrics.find(item => item.title === text);
+    return hit?.fontSizePx || coverTitleStyle?.fontSizePx || 48;
+  };
+
+  // 切选题 / 换基底 / 换类型后，重新问一次字号，并同步逐条的标题草稿。
+  useEffect(() => {
+    setPerTopicTitle(String(activeTopic?.title || reuseTitles[0] || "").trim());
+    setPerTopicBackgroundPrompt("");
+    setPerTopicExpression("");
+    const style = activeSelection?.cover?.titleStyle || baseTitleStyle;
+    if (!style) {
+      setTitleMetrics([]);
+      return;
+    }
+    loadTitleMetrics([
+      ...reuseTitles,
+      ...(activeSelection?.cover?.candidates || []).map(item => item.title),
+    ]);
+  }, [activeTopic?.id, reuseTitles, baseTitleStyle, activeSelection, loadTitleMetrics]);
 
   // ── 3.2 发布文案 ──────────────────────────────────────────────────────────
   const loadPublishCopy = async () => {
@@ -523,18 +917,6 @@ export default function PublishWarehousePage() {
     setTimeout(() => { window.location.href = "/"; }, 1800);
   };
 
-  const handleReferenceUpload = async (file: File | null) => {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setError("参考照片必须是图片");
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = () => setReferenceDataUrl(String(reader.result || ""));
-    reader.onerror = () => setError("参考照片读取失败");
-    reader.readAsDataURL(file);
-  };
-
   const coverCandidates = activeSelection?.cover?.candidates || [];
   const selectedCoverId = activeSelection?.cover?.selectedId || "";
   const selectedCover = coverCandidates.find(item => item.id === selectedCoverId) || null;
@@ -625,7 +1007,6 @@ export default function PublishWarehousePage() {
                   // 提示词是**按选题**写的，切走必须清掉 —— 否则它的内容与当前选题无关，
                   // 而「确认提示词并生成封面」是唯一花钱的按钮，带着上一条的提示词出图等于白花钱。
                   // （参考照片不跟着清：它是**按客户**的 IP 形象照，同一客户下本来就该复用。）
-                  setCoverPromptDraft("");
                   setCopyResult(null);
                   setTopicTags(null);
                 }}
@@ -660,160 +1041,568 @@ export default function PublishWarehousePage() {
 
         {/* ── 3.1 封面 ─────────────────────────────────────────────────────── */}
         {activeTab === "cover" && (
-          <div className="grid gap-5 lg:grid-cols-2">
-            <Card className="border-slate-200 bg-white">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base font-semibold text-slate-900">封面方案（提示词）</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <Button
-                  className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
-                  disabled={coverLoading || !activeTopic}
-                  onClick={() => loadCoverPlan(activeTopic)}
+          /* 3.1 内部按**资产生命周期**分两层：基底是账号级（一次确认、长期复用），
+             每条只做这一类需要的最小动作。用左侧描边表达层级（与账号定位页同一套约定）。 */
+          <div className="space-y-4 border-l-2 border-slate-200 pl-4 sm:pl-5">
+            <div className="flex flex-wrap gap-2">
+              {[
+                { id: "base" as const, label: "① 封面基底（账号级）", hint: "类型 / 人像 / 背景模板 / 标题样式" },
+                { id: "perTopic" as const, label: "② 每条出封面", hint: "只做这一类需要的最小动作" },
+              ].map(item => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => setCoverSubTab(item.id)}
+                  className={`rounded-xl border px-4 py-2.5 text-left text-sm transition ${
+                    coverSubTab === item.id ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
+                  }`}
                 >
-                  {coverLoading ? "生成中…" : coverPlanTopicId === activeTopicId ? "重新生成方案" : "生成封面方案"}
-                </Button>
+                  <div className={`font-semibold ${coverSubTab === item.id ? "text-blue-700" : "text-slate-800"}`}>{item.label}</div>
+                  <div className="mt-0.5 text-xs text-slate-400">{item.hint}</div>
+                </button>
+              ))}
+            </div>
 
-                {coverPlan?.ipPortrait?.prompt && (
-                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
-                    <div className="font-semibold text-slate-700">IP 形象照提示词</div>
-                    <p className="mt-1 whitespace-pre-wrap">{coverPlan.ipPortrait.prompt}</p>
-                    {coverPlan.ipPortrait.basis && <p className="mt-1 text-slate-400">依据：{coverPlan.ipPortrait.basis}</p>}
-                  </div>
-                )}
-
-                {coverPlan?.backgroundAnalysis?.summary && (
-                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
-                    <div className="font-semibold text-slate-700">对标封面拆解</div>
-                    <p className="mt-1">{coverPlan.backgroundAnalysis.summary}</p>
-                  </div>
-                )}
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">出图提示词（可改，确认后再出图）</label>
-                  <textarea
-                    value={coverPromptDraft}
-                    onChange={event => setCoverPromptDraft(event.target.value)}
-                    rows={4}
-                    className="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
-                    placeholder="先生成方案，或直接写提示词"
-                  />
-                </div>
-
-                <div>
-                  <label className="text-xs font-semibold text-slate-600">参考照片（可选，上传后走参考图编辑）</label>
-                  <input
-                    type="file"
-                    accept="image/*"
-                    onChange={event => handleReferenceUpload(event.target.files?.[0] || null)}
-                    className="mt-1.5 block w-full text-xs text-slate-500"
-                  />
-                </div>
-
-                <Button
-                  className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
-                  disabled={Boolean(coverImageLoading) || !coverPromptDraft.trim()}
-                  onClick={() => makeCoverImage(coverPromptDraft, `封面 ${coverCandidates.length + 1}`, [])}
-                >
-                  {coverImageLoading ? "出图中…（较慢）" : "确认提示词并生成封面"}
-                </Button>
-
-                {coverPlan?.backgrounds && coverPlan.backgrounds.length > 0 && (
-                  <div className="space-y-2">
-                    <div className="text-xs font-semibold text-slate-600">背景候选（点「用这个」填入提示词）</div>
-                    {coverPlan.backgrounds.map(background => (
-                      <div key={background.id} className="flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2.5">
-                        <div className="min-w-0 flex-1">
-                          <div className="text-xs font-medium text-slate-800">{background.title}</div>
-                          <div className="mt-1 line-clamp-2 text-xs text-slate-500">{toPreview(background.prompt)}</div>
-                          {background.keywords.length > 0 && (
-                            <div className="mt-1 flex flex-wrap gap-1">
-                              {background.keywords.map(keyword => (
-                                <Badge key={keyword} className="bg-slate-100 text-slate-600 hover:bg-slate-100">{keyword}</Badge>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                        <Button
-                          variant="outline"
-                          className="shrink-0 text-xs"
-                          onClick={() => setCoverPromptDraft(background.prompt)}
-                        >
-                          用这个
-                        </Button>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            <Card className="border-slate-200 bg-white">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base font-semibold text-slate-900">
-                  封面候选与标题叠加（{coverCandidates.length}）
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                {coverCandidates.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-400">
-                    还没有封面。先确认提示词并生成。
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-2 gap-3">
-                    {coverCandidates.map(candidate => {
-                      const src = candidate.image?.dataUrl || candidate.image?.url || "";
-                      const isSelected = candidate.id === selectedCoverId;
-                      const style = activeSelection?.cover?.titleStyle || coverPlan?.titleStyle;
+            {coverSubTab === "base" ? (
+              <div className="space-y-4">
+                {/* 第一步：选类型 —— 它决定后面要准备什么、每条要走几步 */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <CardTitle className="text-base font-semibold text-slate-900">第一步 · 选封面类型</CardTitle>
+                      {coverBaseLoading && <span className="text-xs text-slate-400">读取上次的基底…</span>}
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-xs leading-5 text-slate-500">
+                      三类的区别是「用不用那两个可复用的 Agent」：
+                      <span className="font-medium text-slate-700">一类都不用，二类只用个性化背景，三类两个都用</span>。
+                      类型决定每条选题要做几步，所以先定它。
+                    </p>
+                    {coverTiers.map(tier => {
+                      const selected = baseTier === tier.id;
                       return (
-                        <div
-                          key={candidate.id}
-                          className={`overflow-hidden rounded-xl border transition ${isSelected ? "border-blue-400 ring-2 ring-blue-200" : "border-slate-200"}`}
+                        <button
+                          key={tier.id}
+                          type="button"
+                          onClick={() => setBaseTier(tier.id)}
+                          className={`block w-full rounded-xl border px-4 py-3 text-left transition ${
+                            selected ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
+                          }`}
                         >
-                          <button
-                            type="button"
-                            className="relative block w-full"
-                            onClick={() => persist(activeTopicId, {
-                              cover: { selectedId: candidate.id, candidates: coverCandidates, titleStyle: coverPlan?.titleStyle || null },
-                              publishCopy: activeSelection?.publishCopy || null,
-                              topicTags: activeSelection?.topicTags || null,
-                            })}
-                          >
-                            {src ? (
-                              <img src={src} alt={candidate.title} className="aspect-[3/4] w-full object-cover" />
-                            ) : (
-                              <div className="flex aspect-[3/4] w-full items-center justify-center bg-slate-100 text-xs text-slate-400">
-                                无图片
-                              </div>
-                            )}
-                            {/* 标题叠加：纯 CSS。让模型在图上写字会写成乱码，所以文字一律前端叠。 */}
-                            {overlayTitle && (
-                              <span
-                                className={`absolute inset-x-0 px-2 text-center font-bold leading-tight drop-shadow ${
-                                  style?.position === "top" ? "top-2" : style?.position === "center" ? "top-1/2 -translate-y-1/2" : "bottom-2"
-                                }`}
-                                style={{ color: style?.color || "#ffffff", fontSize: style?.fontSize || "14px" }}
-                              >
-                                {overlayTitle}
-                              </span>
-                            )}
-                          </button>
-                          <div className="flex items-center justify-between gap-2 px-2.5 py-2">
-                            <span className="truncate text-xs text-slate-600">{candidate.title}</span>
-                            {isSelected && <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">已选</Badge>}
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className={`text-sm font-semibold ${selected ? "text-blue-700" : "text-slate-800"}`}>
+                              {tier.code}、{tier.label}
+                            </span>
+                            <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">{tier.summary}</Badge>
+                            {selected && <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">当前</Badge>}
                           </div>
-                        </div>
+                          <div className="mt-1.5 text-xs leading-5 text-slate-500">{tier.note}</div>
+                          <div className="mt-1 text-xs text-slate-400">使用节点：{tier.whenToUse}</div>
+                        </button>
                       );
                     })}
-                  </div>
+                    {coverTiers.length === 0 && (
+                      <p className="text-xs text-slate-400">类型定义没读到，先检查接口是否可用再刷新。</p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* 第二步：按类型准备素材 */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="pb-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <CardTitle className="text-base font-semibold text-slate-900">第二步 · 准备这类要用的素材</CardTitle>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {activeTier?.needsPortrait && <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">需要 IP 人像</Badge>}
+                        {activeTier?.needsBackgroundTemplate && <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">需要背景模板</Badge>}
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-5">
+                    {/* 一类：一张固定封面模板（人像与背景都在图里），之后只换标题 */}
+                    {activeTier && !activeTier.needsPortrait && !activeTier.needsBackgroundTemplate && (
+                      <div>
+                        <div className="text-xs font-semibold text-slate-600">固定封面模板（含固定人像与背景）</div>
+                        <p className="mt-1 text-xs leading-5 text-slate-500">
+                          上传一张已经做好的模板图。之后每一期只换标题文字，字号会按标题长度自动调整。
+                        </p>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="mt-2 block w-full text-xs text-slate-500"
+                          onChange={event => handleBaseImageUpload(event.target.files?.[0] || null, setBaseSourceImage)}
+                        />
+                        {(baseBackgroundTemplate || baseSourceImage) && (
+                          <img
+                            src={(baseBackgroundTemplate || baseSourceImage)?.url || (baseBackgroundTemplate || baseSourceImage)?.dataUrl}
+                            alt="固定封面模板"
+                            className="mt-3 w-full max-w-[220px] rounded-lg border border-slate-200 object-cover"
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    {/* 二 / 三类：上传对标封面 → 拆解 → 生成背景风格模板 */}
+                    {activeTier?.needsBackgroundTemplate && (
+                      <div className="space-y-3">
+                        <div className="text-xs font-semibold text-slate-600">对标封面（用于拆解出背景风格模板）</div>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="block w-full text-xs text-slate-500"
+                          onChange={event => handleBaseImageUpload(event.target.files?.[0] || null, image => {
+                            setBaseSourceImage(image);
+                            setBaseAnalysis(null);
+                          })}
+                        />
+                        {baseSourceImage && (
+                          <img
+                            src={baseSourceImage.url || baseSourceImage.dataUrl}
+                            alt="对标封面"
+                            className="w-full max-w-[220px] rounded-lg border border-slate-200 object-cover"
+                          />
+                        )}
+                        <Button
+                          variant="outline"
+                          disabled={analysisLoading || !baseSourceImage}
+                          onClick={runCoverAnalysis}
+                        >
+                          {analysisLoading ? "拆解中…" : baseAnalysis ? "重新拆解" : "拆解这张对标封面"}
+                        </Button>
+
+                        {baseAnalysis && (
+                          <div className="space-y-2 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+                            {[
+                              ["画风", baseAnalysis.artStyle],
+                              ["元素", baseAnalysis.elements],
+                              ["排版", baseAnalysis.layout],
+                              ["视觉风格", baseAnalysis.visualStyle],
+                            ].map(([label, value]) => (
+                              <div key={label}>
+                                <span className="font-semibold text-slate-700">{label}</span>
+                                ：{value || "待人工补充"}
+                              </div>
+                            ))}
+                            <div>
+                              <span className="font-semibold text-slate-700">留白区域</span>
+                              ：{baseAnalysis.reservedAreas.length > 0 ? baseAnalysis.reservedAreas.join("；") : "待人工补充"}
+                            </div>
+                          </div>
+                        )}
+
+                        <div>
+                          <label className="text-xs font-semibold text-slate-600">背景模板提示词（可改，确认后再出图）</label>
+                          <textarea
+                            value={baseBackgroundPrompt}
+                            onChange={event => setBaseBackgroundPrompt(event.target.value)}
+                            rows={4}
+                            placeholder="先拆解对标封面，会自动填入一份可改的提示词；也可以直接写"
+                            className="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
+                          />
+                        </div>
+                        <Button
+                          className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                          disabled={baseImageLoading === "backgroundTemplate" || !baseBackgroundPrompt.trim()}
+                          onClick={() => makeBaseImage("backgroundTemplate")}
+                        >
+                          {baseImageLoading === "backgroundTemplate" ? "出图中…（较慢）" : "确认提示词并生成背景模板"}
+                        </Button>
+                        {baseBackgroundTemplate && (
+                          <img
+                            src={baseBackgroundTemplate.url || baseBackgroundTemplate.dataUrl}
+                            alt="背景风格模板"
+                            className="w-full max-w-[220px] rounded-lg border border-slate-200 object-cover"
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    {/* 二 / 三类：IP 人像（三类可由 Agent 生成；二类沿用固定的一张） */}
+                    {activeTier?.needsPortrait && (
+                      <div className="space-y-3 border-t border-slate-100 pt-4">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-xs font-semibold text-slate-600">IP 人像</div>
+                          {activeTier.canGeneratePortrait
+                            ? <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">这一类会用 IP 形象照 Agent</Badge>
+                            : <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">这一类沿用固定的那一张</Badge>}
+                        </div>
+                        <p className="text-xs leading-5 text-slate-500">
+                          {activeTier.canGeneratePortrait
+                            ? "先给出提示词建议（穿着/场景来自内容定位、表情动作来自人设定位），人工改过之后再结合客户参考照片出图。"
+                            : "这一类不重跑形象照 Agent，直接用一张已有的固定人像：可以上传，也可以沿用之前生成的。"}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          <Button variant="outline" disabled={portraitLoading} onClick={runPortraitPlan}>
+                            {portraitLoading ? "生成中…" : "给出形象照提示词建议"}
+                          </Button>
+                          <label className="inline-flex cursor-pointer items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 hover:border-slate-300">
+                            上传参考照片
+                            <input
+                              type="file"
+                              accept="image/*"
+                              className="hidden"
+                              onChange={event => handleBaseImageUpload(event.target.files?.[0] || null, setBasePortraitImage)}
+                            />
+                          </label>
+                        </div>
+                        {basePortraitBasis && <div className="text-xs text-slate-400">依据：{basePortraitBasis}</div>}
+                        <div>
+                          <label className="text-xs font-semibold text-slate-600">形象照提示词（可改，确认后再出图）</label>
+                          <textarea
+                            value={basePortraitPrompt}
+                            onChange={event => setBasePortraitPrompt(event.target.value)}
+                            rows={3}
+                            placeholder="先点「给出形象照提示词建议」，或直接写"
+                            className="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
+                          />
+                        </div>
+                        <Button
+                          className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                          disabled={baseImageLoading === "portrait" || !basePortraitPrompt.trim()}
+                          onClick={() => makeBaseImage("portrait")}
+                        >
+                          {baseImageLoading === "portrait" ? "出图中…（较慢）" : "确认提示词并生成 IP 形象照"}
+                        </Button>
+                        {basePortraitImage && (
+                          <img
+                            src={basePortraitImage.url || basePortraitImage.dataUrl}
+                            alt="IP 人像"
+                            className="w-full max-w-[180px] rounded-lg border border-slate-200 object-cover"
+                          />
+                        )}
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* 第三步：标题样式模板（三类共用；字号是模板参数，逐条由后端现算） */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base font-semibold text-slate-900">第三步 · 标题样式模板</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <p className="text-xs leading-5 text-slate-500">
+                      三类共用：风格（字体 / 颜色 / 位置）锁在这里，保证每期一致；
+                      字号只给基准与下限，<span className="font-medium text-slate-700">每期按标题长度自动收缩</span>，最多占几行也在这里定。
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-3">
+                      <label className="block text-xs font-medium text-slate-600">
+                        字体
+                        <input
+                          value={baseTitleStyle?.fontFamily || ""}
+                          onChange={event => setBaseTitleStyle(prev => ({ ...(prev || emptyTitleStyle()), fontFamily: event.target.value }))}
+                          placeholder="例如 粗黑体"
+                          className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium text-slate-600">
+                        颜色
+                        <input
+                          value={baseTitleStyle?.color || ""}
+                          onChange={event => setBaseTitleStyle(prev => ({ ...(prev || emptyTitleStyle()), color: event.target.value }))}
+                          placeholder="例如 #ffffff"
+                          className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium text-slate-600">
+                        位置
+                        <select
+                          value={baseTitleStyle?.position || "bottom"}
+                          onChange={event => setBaseTitleStyle(prev => ({ ...(prev || emptyTitleStyle()), position: event.target.value }))}
+                          className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        >
+                          <option value="top">上</option>
+                          <option value="center">中</option>
+                          <option value="bottom">下</option>
+                        </select>
+                      </label>
+                      <label className="block text-xs font-medium text-slate-600">
+                        基准字号（px）
+                        <input
+                          type="number"
+                          value={baseTitleStyle?.fontSizePx ?? 64}
+                          onChange={event => setBaseTitleStyle(prev => ({ ...(prev || emptyTitleStyle()), fontSizePx: Number(event.target.value) || 0 }))}
+                          className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium text-slate-600">
+                        最小字号（px）
+                        <input
+                          type="number"
+                          value={baseTitleStyle?.minFontSizePx ?? 36}
+                          onChange={event => setBaseTitleStyle(prev => ({ ...(prev || emptyTitleStyle()), minFontSizePx: Number(event.target.value) || 0 }))}
+                          className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        />
+                      </label>
+                      <label className="block text-xs font-medium text-slate-600">
+                        最多行数
+                        <input
+                          type="number"
+                          value={baseTitleStyle?.maxLines ?? 2}
+                          onChange={event => setBaseTitleStyle(prev => ({ ...(prev || emptyTitleStyle()), maxLines: Number(event.target.value) || 0 }))}
+                          className="mt-1.5 w-full rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                        />
+                      </label>
+                    </div>
+                    <div className="flex flex-wrap gap-2 pt-1">
+                      <Button
+                        className="bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                        disabled={coverBaseSaving}
+                        onClick={() => persistCoverBase()}
+                      >
+                        {coverBaseSaving ? "保存中…" : "保存封面基底"}
+                      </Button>
+                      <Button variant="outline" disabled={coverBaseSaving} onClick={clearCoverBase}>
+                        清空重来
+                      </Button>
+                      {coverBase?.updatedAt && (
+                        <span className="self-center text-xs text-slate-400">
+                          上次保存：{formatMetTime(coverBase.updatedAt)}
+                        </span>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {/* 就绪检查：缺什么就明说缺哪一步，并把出口指回基底页 */}
+                <Card className="border-slate-200 bg-white">
+                  <CardContent className="pt-6">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <span className="text-sm font-semibold text-slate-800">
+                        {activeTier ? `${activeTier.code}、${activeTier.label}` : "未选类型"}
+                      </span>
+                      {activeTier && <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">{activeTier.summary}</Badge>}
+                      {coverReadiness.ok
+                        ? <Badge className="bg-emerald-50 text-emerald-600 hover:bg-emerald-50">基底就绪</Badge>
+                        : <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">还缺：{coverReadiness.missing.join("、")}</Badge>}
+                    </div>
+                    <p className="mt-2 text-xs leading-5 text-slate-500">{activeTier?.note || "请先在「封面基底」选好类型。"}</p>
+                    {!coverReadiness.ok && (
+                      <Button variant="outline" className="mt-3" onClick={() => setCoverSubTab("base")}>
+                        去封面基底补齐
+                      </Button>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* 标题（三类都要；一类这就是唯一的动作） */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-base font-semibold text-slate-900">这一期的标题</CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    <input
+                      value={perTopicTitle}
+                      onChange={event => setPerTopicTitle(event.target.value)}
+                      placeholder="这一期要用的标题"
+                      className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm"
+                    />
+                    {reuseTitles.length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {reuseTitles.map(item => (
+                          <button
+                            key={item}
+                            type="button"
+                            onClick={() => setPerTopicTitle(item)}
+                            className={`max-w-[260px] truncate rounded-lg border px-3 py-1.5 text-xs transition ${
+                              perTopicTitle === item ? "border-blue-400 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                            }`}
+                          >
+                            {item}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    <div className="text-xs text-slate-500">
+                      字号由后端按长度与留白空间算：
+                      <span className="font-medium text-slate-800">{fontSizeFor(perTopicTitle)}px</span>
+                      {titleMetrics.find(item => item.title === perTopicTitle)?.shrunk && "（已按长度收缩）"}
+                    </div>
+                  </CardContent>
+                </Card>
+
+                {/* 背景提示词（二 / 三类每期都要） */}
+                {activeTier?.perIssueFields.includes("backgroundPrompt") && (
+                  <Card className="border-slate-200 bg-white">
+                    <CardHeader className="pb-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <CardTitle className="text-base font-semibold text-slate-900">这一期的背景</CardTitle>
+                        <Button variant="outline" disabled={coverLoading || !activeTopic} onClick={loadCoverPlan}>
+                          {coverLoading ? "生成中…" : "按脚本给提示词建议"}
+                        </Button>
+                      </div>
+                    </CardHeader>
+                    <CardContent className="space-y-3">
+                      <p className="text-xs leading-5 text-slate-500">
+                        围绕这一期脚本的关键词生成个性化背景，关键词元素要在背景中体现。
+                      </p>
+                      <textarea
+                        value={perTopicBackgroundPrompt}
+                        onChange={event => setPerTopicBackgroundPrompt(event.target.value)}
+                        rows={4}
+                        placeholder="先点右上角按脚本生成候选提示词，再挑一个改；也可以直接写"
+                        className="w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
+                      />
+                      {(coverPlan?.backgrounds || []).length > 0 && (
+                        <div className="space-y-2">
+                          {(coverPlan?.backgrounds || []).map(background => (
+                            <div key={background.id} className="flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2.5">
+                              <div className="min-w-0 flex-1">
+                                <div className="text-xs font-medium text-slate-800">{background.title}</div>
+                                <div className="mt-1 line-clamp-2 text-xs text-slate-500">{toPreview(background.prompt)}</div>
+                                {background.keywords.length > 0 && (
+                                  <div className="mt-1 flex flex-wrap gap-1">
+                                    {background.keywords.map(keyword => (
+                                      <Badge key={keyword} className="bg-slate-100 text-slate-600 hover:bg-slate-100">{keyword}</Badge>
+                                    ))}
+                                  </div>
+                                )}
+                              </div>
+                              <Button variant="outline" className="shrink-0 text-xs" onClick={() => setPerTopicBackgroundPrompt(background.prompt)}>
+                                用这个
+                              </Button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
                 )}
-                {selectedCover && (
-                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
-                    当前选中：<span className="font-medium text-slate-800">{selectedCover.title}</span>
-                  </div>
+
+                {/* 人像表情（三类才有） */}
+                {activeTier?.perIssueFields.includes("portraitExpression") && (
+                  <Card className="border-slate-200 bg-white">
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-base font-semibold text-slate-900">这一期的人像表情 / 动作</CardTitle>
+                    </CardHeader>
+                    <CardContent className="space-y-2">
+                      <p className="text-xs leading-5 text-slate-500">
+                        以基底里的 IP 形象照为参考图，结合这一期脚本生成适配的表情。
+                      </p>
+                      <input
+                        value={perTopicExpression}
+                        onChange={event => setPerTopicExpression(event.target.value)}
+                        placeholder="例如 惊讶并竖起一根手指"
+                        className="w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm"
+                      />
+                    </CardContent>
+                  </Card>
                 )}
-              </CardContent>
-            </Card>
+
+                {/* 出封面：一类不花钱（模板 + 叠字），二/三类走唯一花钱的出图 */}
+                <Card className="border-slate-200 bg-white">
+                  <CardContent className="space-y-3 pt-6">
+                    <Button
+                      className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                      disabled={!coverReadiness.ok || Boolean(coverImageLoading) || !perTopicTitle.trim()}
+                      onClick={() => {
+                        if (activeTier?.id === "standard") {
+                          makeStandardCover(perTopicTitle);
+                          return;
+                        }
+                        // 二 / 三类：把基底 + 这一期的变量合成一条出图提示词，交到确认出图那条链路。
+                        const parts = [
+                          perTopicBackgroundPrompt.trim(),
+                          perTopicExpression.trim() ? `人物表情与动作：${perTopicExpression.trim()}` : "",
+                          "竖版 3:4 封面，不要写任何文字（标题由前端叠加）。",
+                        ].filter(Boolean);
+                        makeCoverImage(parts.join("\n"), `封面 ${coverCandidates.length + 1}`, []);
+                      }}
+                    >
+                      {activeTier?.id === "standard"
+                        ? "生成封面（模板 + 标题，不调用出图）"
+                        : (coverImageLoading ? "出图中…（较慢）" : "确认提示词并生成封面")}
+                    </Button>
+                    {!coverReadiness.ok && (
+                      <p className="text-xs leading-5 text-amber-700">
+                        还缺 {coverReadiness.missing.join("、")} —— 先在「封面基底」补齐再出封面。
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* 候选与标题叠加 */}
+                <Card className="border-slate-200 bg-white">
+                  <CardHeader className="pb-3">
+                    <CardTitle className="text-base font-semibold text-slate-900">
+                      封面候选与标题叠加（{coverCandidates.length}）
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {coverCandidates.length === 0 ? (
+                      <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-400">
+                        还没有封面。按上面的类型补齐素材后生成。
+                      </p>
+                    ) : (
+                      <div className="grid grid-cols-2 gap-3">
+                        {coverCandidates.map(candidate => {
+                          const src = candidate.image?.dataUrl || candidate.image?.url || "";
+                          const isSelected = candidate.id === selectedCoverId;
+                          const label = overlayTextFor(candidate);
+                          const candidateTier = coverTiers.find(item => item.id === String(candidate.tier || ""));
+                          return (
+                            <div
+                              key={candidate.id}
+                              className={`overflow-hidden rounded-xl border transition ${isSelected ? "border-blue-400 ring-2 ring-blue-200" : "border-slate-200"}`}
+                            >
+                              <button
+                                type="button"
+                                className="relative block w-full"
+                                onClick={() => persist(activeTopicId, {
+                                  cover: { selectedId: candidate.id, candidates: coverCandidates, titleStyle: coverTitleStyle || null },
+                                  publishCopy: activeSelection?.publishCopy || null,
+                                  topicTags: activeSelection?.topicTags || null,
+                                })}
+                              >
+                                {src ? (
+                                  <img src={src} alt={candidate.title} className="aspect-[3/4] w-full object-cover" />
+                                ) : (
+                                  <div className="flex aspect-[3/4] w-full items-center justify-center bg-slate-100 text-xs text-slate-400">
+                                    无图片
+                                  </div>
+                                )}
+                                {/* 标题叠加：纯 CSS。让模型在图上写字会写成乱码，所以文字一律前端叠。 */}
+                                {label && (
+                                  <span
+                                    className={`absolute inset-x-0 px-2 text-center font-bold leading-tight drop-shadow ${
+                                      coverTitleStyle?.position === "top" ? "top-2" : coverTitleStyle?.position === "center" ? "top-1/2 -translate-y-1/2" : "bottom-2"
+                                    }`}
+                                    style={{
+                                      color: coverTitleStyle?.color || "#ffffff",
+                                      // ⚠️ 用后端算好的**数字**字号：模板里的 fontSizePx 是数字，
+                                      //    早期直接拿模型给的自由文本当 CSS 值，浏览器会静默丢掉。
+                                      fontSize: `${fontSizeFor(label)}px`,
+                                    }}
+                                  >
+                                    {label}
+                                  </span>
+                                )}
+                              </button>
+                              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-2">
+                                <span className="truncate text-xs text-slate-600">{candidate.title}</span>
+                                <div className="flex shrink-0 items-center gap-1">
+                                  {/* 换类型后旧封面仍保留，标出它当时是哪一类 */}
+                                  {candidateTier && <Badge className="bg-slate-100 text-slate-500 hover:bg-slate-100">{candidateTier.code}类</Badge>}
+                                  {isSelected && <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">已选</Badge>}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    {selectedCover && (
+                      <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+                        当前选中：<span className="font-medium text-slate-800">{selectedCover.title}</span>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </div>
         )}
 

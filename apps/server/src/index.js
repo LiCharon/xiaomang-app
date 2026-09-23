@@ -37,7 +37,8 @@ import { getCustomer, listCustomers } from "../api/_lib/ipProfileStore.js";
 import { deleteTopicLibrary, getTopicCategoryDictionary, getTopicCategoryDictionaryForEmployee, getTopicLibrary, getTopicLibraryForEmployee, listTopicLibraries, listTopicLibrariesForEmployee, removeTopicLibraryAccount, saveTopicLibrary } from "../api/_lib/topicLibraryStore.js";
 import { appendTopicRefreshItems, deleteTopicRefreshSession, dictionaryFingerprint, getTopicRefreshSession, saveTopicRefreshCandidates } from "../api/_lib/topicRefreshSessionStore.js";
 import { PUBLISH_PHASES, runPublishPhase } from "../api/_lib/publishAgentRunner.js";
-import { clearPublishSelections, deleteAccountTags, deletePublishSelection, getAccountTags, listPublishSelections, saveAccountTags, savePublishSelection } from "../api/_lib/publishWarehouseStore.js";
+import { clearPublishSelections, deleteAccountTags, deleteCoverBase, deletePublishSelection, getAccountTags, getCoverBase, listPublishSelections, saveAccountTags, saveCoverBase, savePublishSelection } from "../api/_lib/publishWarehouseStore.js";
+import { COVER_TIERS } from "../api/_lib/publishWarehouse.js";
 import { fetchFansPortrait } from "../api/_lib/douyinFansPortrait.js";
 import { getFansPortrait, saveFansPortrait } from "../api/_lib/fansPortraitStore.js";
 import { fetchCommentsBatch, normalizeCommentTargets } from "../api/_lib/videoComments.js";
@@ -1257,14 +1258,22 @@ app.post("/api/agent/publish", async (req, res) => {
 app.get("/api/publish-warehouse", async (req, res) => {
   try {
     const resource = String(req.query?.resource || "selections").trim();
+    // 封面的三类定义是纯常量（`publishWarehouse.js` 那一份），不依赖客户 —— 前端只管读它渲染。
+    if (resource === "cover-tiers") {
+      return res.json({ success: true, items: COVER_TIERS });
+    }
     const customerId = String(req.query?.customerId || "").trim();
     if (!customerId) return res.status(400).json({ success: false, error: "缺少 customerId" });
     if (resource === "account-tags") {
       const item = await getAccountTags({ ownerId: req.authUser.id, customerId });
       return res.json({ success: true, item });
     }
+    if (resource === "cover-base") {
+      const item = await getCoverBase({ ownerId: req.authUser.id, customerId });
+      return res.json({ success: true, item });
+    }
     if (resource !== "selections") {
-      return res.status(400).json({ success: false, error: `不支持的 resource：${resource}（可用：selections / account-tags）` });
+      return res.status(400).json({ success: false, error: `不支持的 resource：${resource}（可用：selections / account-tags / cover-base / cover-tiers）` });
     }
     const items = await listPublishSelections({ ownerId: req.authUser.id, customerId });
     return res.json({ success: true, items });
@@ -1289,8 +1298,23 @@ app.post("/api/publish-warehouse", async (req, res) => {
       });
       return res.json({ success: true, item });
     }
+    if (resource === "cover-base") {
+      const item = await saveCoverBase({
+        ownerId: req.authUser.id,
+        customerId: body.customerId,
+        customerName: body.customerName,
+        tier: body.tier,
+        sourceImage: body.sourceImage,
+        analysis: body.analysis,
+        titleStyle: body.titleStyle,
+        backgroundTemplate: body.backgroundTemplate,
+        backgroundPrompt: body.backgroundPrompt,
+        portrait: body.portrait,
+      });
+      return res.json({ success: true, item });
+    }
     if (resource !== "selections") {
-      return res.status(400).json({ success: false, error: `不支持的 resource：${resource}（可用：selections / account-tags）` });
+      return res.status(400).json({ success: false, error: `不支持的 resource：${resource}（可用：selections / account-tags / cover-base）` });
     }
     const item = await savePublishSelection({
       ownerId: req.authUser.id,
@@ -1315,8 +1339,11 @@ app.delete("/api/publish-warehouse", async (req, res) => {
     if (resource === "account-tags") {
       return res.json({ success: true, ...(await deleteAccountTags({ ownerId: req.authUser.id, customerId })) });
     }
+    if (resource === "cover-base") {
+      return res.json({ success: true, ...(await deleteCoverBase({ ownerId: req.authUser.id, customerId })) });
+    }
     if (resource !== "selections") {
-      return res.status(400).json({ success: false, error: `不支持的 resource：${resource}（可用：selections / account-tags）` });
+      return res.status(400).json({ success: false, error: `不支持的 resource：${resource}（可用：selections / account-tags / cover-base）` });
     }
     const topicId = String(req.query?.topicId || "").trim();
     const result = topicId

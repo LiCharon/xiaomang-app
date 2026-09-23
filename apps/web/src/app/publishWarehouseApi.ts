@@ -95,6 +95,8 @@ export type CoverCandidate = {
   keywords: string[];
   prompt: string;
   image: { url: string; dataUrl: string };
+  /** 出这张封面时用的是哪一类（换类型后旧封面仍保留并标出当时的类型）。 */
+  tier?: string;
 };
 
 export type PublishSelection = {
@@ -105,6 +107,69 @@ export type PublishSelection = {
   topicTags: { groups: TagGroup[]; selected: string[]; missing: string[] };
   updatedAt: string;
 };
+
+// ── 封面基底（账号级，3.1 三类共用）─────────────────────────────────────────
+
+/**
+ * 三类封面。**定义在后端**（`publishWarehouse.js` 的 `COVER_TIERS`），
+ * 前端从 `?resource=cover-tiers` 读回来渲染 —— 不在这里再写一份清单（§6.3⑫）。
+ */
+export type CoverTier = {
+  id: string;
+  code: string;
+  label: string;
+  summary: string;
+  whenToUse: string;
+  /** 这条类型要不要一张固定人像。 */
+  needsPortrait: boolean;
+  /** 能不能用「IP 形象照」agent 产出/更新它（二类不用该 agent，沿用已有的那张）。 */
+  canGeneratePortrait: boolean;
+  /** 要不要「背景风格模板」（上传对标封面 → 拆解 → 生成模板）。 */
+  needsBackgroundTemplate: boolean;
+  /** 每条选题在这条类型下要人工确认哪些字段。 */
+  perIssueFields: string[];
+  note: string;
+};
+
+export type CoverAnalysis = {
+  artStyle: string;
+  elements: string;
+  layout: string;
+  visualStyle: string;
+  reservedAreas: string[];
+  summary: string;
+};
+
+export type TitleStyleTemplate = {
+  fontFamily: string;
+  color: string;
+  position: string;
+  alignment: string;
+  note: string;
+  /** 字号是**模板参数**：基准 / 下限 / 行数上限。逐条最终字号由后端现算。 */
+  fontSizePx: number;
+  minFontSizePx: number;
+  maxLines: number;
+};
+
+export type ImageRef = { url: string; dataUrl: string };
+
+export type CoverBase = {
+  customerId: string;
+  customerName: string;
+  tier: string;
+  /** 一类：上传的固定封面模板；二/三类：上传的对标封面（用于拆解）。 */
+  sourceImage: ImageRef | null;
+  analysis: CoverAnalysis;
+  titleStyle: TitleStyleTemplate;
+  /** 背景风格模板图。 */
+  backgroundTemplate: ImageRef | null;
+  backgroundPrompt: string;
+  portrait: { prompt: string; basis: string; image: ImageRef | null };
+  updatedAt: string;
+};
+
+export type TitleMetric = { title: string; fontSizePx: number; lines: number; shrunk: boolean };
 
 const post = async <T,>(path: string, body: unknown): Promise<T> => {
   const response = await fetchWithRetry(apiUrl(path), {
@@ -158,6 +223,26 @@ export const requestAccountTags = (payload: { customerId: string; accountPlan?: 
 export const requestTopicTags = (payload: { customerId: string; topic: Record<string, unknown> }) =>
   post<{ topicTags: TopicTagsResult }>("/api/agent/publish", { phase: "topic-tags", ...payload });
 
+// ── 封面基底的两个阶段（都不出图；出图仍走 cover-image）────────────────────
+
+/** 拆解用户上传的对标封面图：画风 / 元素 / 排版 / 视觉风格 + 留白。**视觉模型，不花钱**。 */
+export const analyzeBenchmarkCover = (payload: { image: { url?: string; dataUrl?: string } }) =>
+  post<{ analysis: CoverAnalysis; titleStyle: TitleStyleTemplate; summary: string; imageGenerationAvailable: boolean }>(
+    "/api/agent/publish",
+    { phase: "cover-base-analysis", ...payload },
+  );
+
+/** IP 形象照的提示词建议（账号级；topic 由后端固定传空，不被某条选题影响）。 */
+export const requestPortraitPlan = (payload: { customerId: string }) =>
+  post<{ ipPortrait: { outfitScene: string; expressionAction: string; prompt: string; basis: string }; imageGenerationAvailable: boolean }>(
+    "/api/agent/publish",
+    { phase: "cover-portrait-plan", ...payload },
+  );
+
+/** 按基底里的标题样式，给候选标题算最终字号与行数（纯计算，无模型）。 */
+export const requestCoverTitleMetrics = (payload: { titles: string[]; titleStyle: Partial<TitleStyleTemplate> }) =>
+  post<{ items: TitleMetric[] }>("/api/agent/publish", { phase: "cover-title-metrics", ...payload });
+
 // ── 持久化 ──────────────────────────────────────────────────────────────────
 
 export const listPublishSelections = async (customerId: string): Promise<PublishSelection[]> => {
@@ -205,3 +290,38 @@ export const saveAccountTags = async (payload: {
   const data = await post<{ item: AccountTagLibrary }>("/api/publish-warehouse?resource=account-tags", payload);
   return data.item;
 };
+
+// ── 封面基底（账号级）───────────────────────────────────────────────────────
+
+/** 三类封面的定义（后端 `COVER_TIERS`）。读一次缓存，不重复请求。 */
+let coverTiersPromise: Promise<CoverTier[]> | null = null;
+export const listCoverTiers = (): Promise<CoverTier[]> => {
+  if (!coverTiersPromise) {
+    coverTiersPromise = get<{ items: CoverTier[] }>("/api/publish-warehouse?resource=cover-tiers")
+      .then(data => (Array.isArray(data?.items) ? data.items : []))
+      .catch(error => {
+        // 失败要允许重试：缓存住一个 rejected promise 会让整页永远读不到类型定义。
+        coverTiersPromise = null;
+        throw error;
+      });
+  }
+  return coverTiersPromise;
+};
+
+export const getCoverBase = async (customerId: string): Promise<CoverBase | null> => {
+  const data = await get<{ item: CoverBase | null }>(
+    `/api/publish-warehouse?resource=cover-base&customerId=${encodeURIComponent(customerId)}`,
+  );
+  return data?.item || null;
+};
+
+export const saveCoverBase = async (payload: Partial<CoverBase> & { customerId: string; tier: string }): Promise<CoverBase> => {
+  const data = await post<{ item: CoverBase }>("/api/publish-warehouse?resource=cover-base", payload);
+  return data.item;
+};
+
+export const deleteCoverBase = (customerId: string) =>
+  fetchWithRetry(
+    apiUrl(`/api/publish-warehouse?resource=cover-base&customerId=${encodeURIComponent(customerId)}`),
+    { method: "DELETE" },
+  ).then(parseApiError);

@@ -17,6 +17,7 @@ import {
   buildPublishCopyInput,
   buildPublishCoverInput,
   buildPublishTagsInput,
+  runBenchmarkCoverAnalysisAgent,
   runPublishCopyAgent,
   runPublishCoverAgent,
   runPublishTagsAgent,
@@ -24,6 +25,7 @@ import {
 import { editImage, generateImage, isImageGenerationConfigured } from "./contentAgent/imageProvider.js";
 import { getTopicLibraryCreativeAdaptation } from "./topicLibraryStore.js";
 import { getLatestAccountPlanReportForCustomer } from "./accountPlanStore.js";
+import { computeTitleFontSize } from "./publishWarehouse.js";
 
 const asText = value => String(value ?? "").trim();
 
@@ -189,7 +191,7 @@ const summarizeAccountContext = context => {
  * 声明在使用之后会撞 TDZ（`ReferenceError`），而且**只在「phase 传错」这条路径上炸**
  * —— 正常路径全绿，一传错就 500 而不是可读的 400。HANDOFF §0.0-F2 记过同类坑。
  */
-export const PUBLISH_PHASES = ["cover-plan", "cover-image", "publish-copy", "account-tags", "topic-tags"];
+export const PUBLISH_PHASES = ["cover-plan", "cover-base-analysis", "cover-portrait-plan", "cover-title-metrics", "cover-image", "publish-copy", "account-tags", "topic-tags"];
 
 /**
  * 执行一个 phase。
@@ -217,6 +219,58 @@ export const runPublishPhase = async ({ phase, body = {}, user, logger, config =
       // 出图能力是否可用要如实告诉前端：没配 key 时界面该说明原因，而不是点了没反应。
       imageGenerationAvailable: isImageGenerationConfigured(),
       accountContext: summarizeAccountContext(accountContext),
+    };
+  }
+
+  if (target === "cover-base-analysis") {
+    // 封面基底第一步（二类/三类）：用户上传对标封面 → 拆解画风/元素/排版/视觉风格。
+    // **只用视觉模型，不出图** —— 这一步不花钱，和后面 cover-image 严格分开（§0.3-F1）。
+    const image = body?.image && typeof body.image === "object" ? body.image : {};
+    // 上传的图是 base64 dataURL（前端 FileReader），也允许直接给一个 http 链接。
+    const imageUrl = asText(image.dataUrl) || asText(image.url) || asText(body?.imageUrl);
+    if (!imageUrl) throw badRequest("缺少对标封面图片");
+    const result = await runBenchmarkCoverAnalysisAgent(imageUrl, config, { logger });
+    return {
+      phase: target,
+      analysis: result.analysis,
+      titleStyle: result.titleStyle,
+      summary: result.summary,
+      // 出图能力照旧如实回报：没配密钥时界面要说明原因，而不是点了没反应。
+      imageGenerationAvailable: isImageGenerationConfigured(),
+    };
+  }
+
+  if (target === "cover-portrait-plan") {
+    // IP 形象照是**账号级**的（三类的可复用 agent 之一）：输入只有账号规划/人设定位。
+    // ⚠️ 所以 topic 刻意传空对象 —— 形象照不该被「当前这条选题」影响，
+    //    否则同一账号每换一条选题就会得到一张不同的脸，那不是「账号恒定」。
+    // 复用同一个封面提示词的 Agent，只取它的 ipPortrait 部分（不额外维护一套提示词）。
+    const accountContext = await loadAccountContext({ customerId, logger });
+    const input = buildPublishCoverInput({
+      topic: {},
+      accountPlan: body?.accountPlan || summarizeAccountContext(accountContext)?.accountPlan || null,
+      categoryContext: summarizeAccountContext(accountContext)?.categories || null,
+    });
+    const plan = await runPublishCoverAgent(input, config, { logger });
+    return {
+      phase: target,
+      ipPortrait: plan.ipPortrait,
+      imageGenerationAvailable: isImageGenerationConfigured(),
+    };
+  }
+
+  if (target === "cover-title-metrics") {
+    // 纯计算：不调模型、不出图。用户口径是「标题风格锁在模板里，只按长度和空间调字号」，
+    // 所以这一步按基底里的标题样式，给每个候选标题算出最终字号与行数。
+    // 让后端算（而不是前端各写一份）的理由同 §6.3⑬：这条规则一旦两边各写一份就会漂。
+    const titleStyle = body?.titleStyle && typeof body.titleStyle === "object" ? body.titleStyle : {};
+    const titles = (Array.isArray(body?.titles) ? body.titles : [])
+      .map(item => cleanText(item, 300))
+      .filter(Boolean)
+      .slice(0, 12);
+    return {
+      phase: target,
+      items: titles.map(title => ({ title, ...computeTitleFontSize({ title, titleStyle }) })),
     };
   }
 

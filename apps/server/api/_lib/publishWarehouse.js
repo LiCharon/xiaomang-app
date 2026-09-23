@@ -34,20 +34,12 @@ export const ACCOUNT_TAG_ANGLES = [
 /** 3.3 选题标签的配比：小类 x2 + 脚本核心内容 x2 + 目标用户 x1。 */
 export const TOPIC_TAG_QUOTA = { subcategory: 2, coreContent: 2, audience: 1 };
 
-/** 账号标签每个角度生成几个候选（人工从中确认 1 个）。 */
-export const ACCOUNT_TAG_CANDIDATES_PER_ANGLE = 2;
-
-/** 3.1 给出几个封面背景候选。 */
-export const COVER_BACKGROUND_CANDIDATE_COUNT = 4;
-
-/** 对标封面拆解的四个角度（文档明确指定，别改）。 */
-export const COVER_ANALYSIS_ANGLES = [
-  { key: "artStyle", label: "画风" },
-  { key: "elements", label: "元素" },
-  { key: "layout", label: "排版" },
-  { key: "visualStyle", label: "视觉风格" },
-];
-
+/**
+ * 归一化小工具 —— 刻意放在所有常量与函数**之前**。
+ *
+ * 曾经把 `findCoverTier` 这类工具写在 `asText` 上面：调用发生在模块加载之后所以能跑，
+ * 但那是靠「没人在这之前调用」的巧合撑着，读代码的人得来回跳。定义一律先于使用。
+ */
 const asText = value => String(value ?? "").trim();
 
 const cleanText = (value, maxLength = 500) => asText(value).replace(/\s+/g, " ").slice(0, maxLength);
@@ -63,6 +55,83 @@ const uniqTexts = (value, maxLength = 200) => {
   }
   return out;
 };
+
+/** 账号标签每个角度生成几个候选（人工从中确认 1 个）。 */
+export const ACCOUNT_TAG_CANDIDATES_PER_ANGLE = 2;
+
+/**
+ * 3.1 封面的**三种类型** —— 全项目唯一的一份定义（前端从接口读它渲染，不另写一份）。
+ *
+ * 三类的差别不是「参数不同」，而是**步骤数与用到哪些可复用 agent 不同**：
+ *   一类 标准模板类   固定人像 + 固定背景   两类 agent 都不用，只换标题
+ *   二类 半非标内容类 固定人像 + 个性化背景 只用个性化背景
+ *   三类 非标内容类   个性化人像 + 个性化背景 两个都用
+ *
+ * 字段含义：
+ *   - `needsPortrait`            这条类型要不要一张固定人像
+ *   - `canGeneratePortrait`      能不能用「IP 形象照生成」agent 去产出/更新它
+ *                                （二类不用该 agent：人像默认沿用已有的那张）
+ *   - `needsBackgroundTemplate`  要不要「背景风格模板」（上传对标封面 → 拆解 → 生成模板）
+ *   - `perIssueFields`           每条选题在这条类型下要人工确认哪些字段（驱动层二的最小动作）
+ *   - `whenToUse`                用户口径的「需要使用此 Agent 的时间节点」，界面直接展示
+ */
+export const COVER_TIERS = [
+  {
+    id: "standard",
+    code: "一",
+    label: "标准模板类",
+    summary: "固定人像、固定背景",
+    whenToUse: "新账号起号；以及定期轮换封面模板（约 1–2 个月一次）",
+    needsPortrait: false,
+    canGeneratePortrait: false,
+    needsBackgroundTemplate: false,
+    perIssueFields: ["title"],
+    note: "只需要改模板上的标题，保持标题字体风格一致；字号按标题长度与留白空间自适应。",
+  },
+  {
+    id: "semiCustom",
+    code: "二",
+    label: "半非标内容类",
+    summary: "固定人像、个性化背景",
+    whenToUse: "每期内容需要根据脚本生成个性化背景",
+    needsPortrait: true,
+    canGeneratePortrait: false,
+    needsBackgroundTemplate: true,
+    perIssueFields: ["title", "backgroundPrompt"],
+    note: "IP 人像沿用固定的一张；每期围绕关键词生成个性化背景，关键词元素要在背景中有所体现。",
+  },
+  {
+    id: "custom",
+    code: "三",
+    label: "非标内容类",
+    summary: "个性化人像、个性化背景",
+    whenToUse: "每期内容需要个性化背景，并让人像表情与脚本适配",
+    needsPortrait: true,
+    canGeneratePortrait: true,
+    needsBackgroundTemplate: true,
+    perIssueFields: ["title", "backgroundPrompt", "portraitExpression"],
+    note: "以 IP 形象照为参考图，结合脚本生成适配的表情；再加上个性化背景与标题。",
+  },
+];
+
+/** 按 id 取类型；取不到时回落到第二类（最常用的一档），绝不让调用方拿到 undefined。 */
+export const findCoverTier = id => (
+  COVER_TIERS.find(tier => tier.id === asText(id)) || COVER_TIERS[1]
+);
+
+/** 类型 id 是否合法（保存基底时校验用；非法就报错，不要静默落一个默认值）。 */
+export const isCoverTierId = id => COVER_TIERS.some(tier => tier.id === asText(id));
+
+/** 3.1 给出几个封面背景候选。 */
+export const COVER_BACKGROUND_CANDIDATE_COUNT = 4;
+
+/** 对标封面拆解的四个角度（文档明确指定，别改）。 */
+export const COVER_ANALYSIS_ANGLES = [
+  { key: "artStyle", label: "画风" },
+  { key: "elements", label: "元素" },
+  { key: "layout", label: "排版" },
+  { key: "visualStyle", label: "视觉风格" },
+];
 
 // ── 3.1 封面 ────────────────────────────────────────────────────────────────
 
@@ -138,6 +207,87 @@ export const normalizeCoverTitleStyle = value => {
     position: ["top", "center", "bottom", "left", "right"].includes(position) ? position : "bottom",
     alignment: cleanText(source.alignment || source.对齐, 40),
     note: cleanText(source.note, 300),
+  };
+};
+
+/** 字号自适应的默认值（模板没给时用它；数值都可被模板覆盖）。 */
+export const TITLE_STYLE_DEFAULTS = {
+  /** 标题基准字号（px，按 1080 宽的竖版封面算）。 */
+  fontSizePx: 64,
+  /** 字号下限：缩到看不清就没有意义了，宁可多占一行。 */
+  minFontSizePx: 36,
+  maxLines: 2,
+  /** 画布宽度与标题可用宽度占比（留出左右边距）。 */
+  canvasWidthPx: 1080,
+  textWidthRatio: 0.9,
+};
+
+/**
+ * 标题样式模板（封面基底里存的那一份）—— 与 `normalizeCoverTitleStyle` 的区别：
+ * 模板存的是**区间与上限**（字号基准/下限/最多几行），逐条的最终字号由
+ * `computeTitleFontSize` 现算。用户口径：「保持标题字体类型风格一致，
+ * 再根据标题长度和空间适当调整字体大小」——所以风格锁在模板里，字号是变量。
+ */
+export const normalizeTitleStyleTemplate = value => {
+  const base = normalizeCoverTitleStyle(value);
+  const source = value && typeof value === "object" ? value : {};
+  const num = (input, fallback) => (Number(input) > 0 ? Number(input) : fallback);
+  return {
+    fontFamily: base.fontFamily,
+    color: base.color,
+    position: base.position,
+    alignment: base.alignment,
+    note: base.note,
+    fontSizePx: num(source.fontSizePx, TITLE_STYLE_DEFAULTS.fontSizePx),
+    minFontSizePx: num(source.minFontSizePx, TITLE_STYLE_DEFAULTS.minFontSizePx),
+    maxLines: num(source.maxLines, TITLE_STYLE_DEFAULTS.maxLines),
+  };
+};
+
+/**
+ * 按标题长度与可用空间算**这一条**的标题字号（后端实算，前端只渲染）。
+ *
+ * 规则（可单测、无模型）：
+ *   1. 先按基准字号排版，算需要几行；
+ *   2. 不超过 `maxLines` 就用基准字号（风格一致优先，能不变就不变）；
+ *   3. 超了才缩字号，缩到能塞进 `maxLines` 为止，但**不低于下限**。
+ * 中文字宽按 1em、半角按 0.55em 估算 —— 这是排版估算不是精确测量，
+ * 所以只用来选字号档位，不参与任何数据写入。
+ */
+export const computeTitleFontSize = ({ title = "", titleStyle = {} } = {}) => {
+  const text = asText(title);
+  const style = normalizeTitleStyleTemplate(titleStyle);
+  const usableWidth = TITLE_STYLE_DEFAULTS.canvasWidthPx * TITLE_STYLE_DEFAULTS.textWidthRatio;
+  const widthEm = [...text].reduce(
+    (sum, char) => sum + (/[\u2e80-\u9fff\uff00-\uffef\u3000-\u303f]/.test(char) ? 1 : 0.55),
+    0,
+  );
+  if (widthEm === 0) return { fontSizePx: style.fontSizePx, lines: 1, shrunk: false };
+
+  const linesAtBase = Math.max(1, Math.ceil((widthEm * style.fontSizePx) / usableWidth));
+  if (linesAtBase <= style.maxLines) {
+    return { fontSizePx: style.fontSizePx, lines: linesAtBase, shrunk: false };
+  }
+
+  const scaled = Math.floor(style.fontSizePx * (style.maxLines / linesAtBase));
+  const fontSizePx = Math.max(style.minFontSizePx, scaled);
+  const lines = Math.max(1, Math.ceil((widthEm * fontSizePx) / usableWidth));
+  return { fontSizePx, lines, shrunk: fontSizePx < style.fontSizePx };
+};
+
+/**
+ * 对标封面拆解（**视觉模型**输出）的归一化 —— 二类/三类的「背景风格模板」第一步。
+ *
+ * 复用 `normalizeCoverAnalysis` / `normalizeCoverTitleStyle`，所以「上传图拆解」
+ * 与原来「Agent 文本出方案」两条路进来的结果形状完全一致，下游只认一种。
+ */
+export const normalizeBenchmarkCoverAnalysis = value => {
+  const source = value && typeof value === "object" ? value : {};
+  const analysis = normalizeCoverAnalysis(source.analysis || source);
+  return {
+    analysis,
+    titleStyle: normalizeTitleStyleTemplate(source.titleStyle || source.title_style || source.标题样式),
+    summary: cleanText(source.summary || analysis.summary, 600),
   };
 };
 

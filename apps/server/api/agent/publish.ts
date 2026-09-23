@@ -4,14 +4,15 @@ import { createRequestLogger } from "../_lib/contentAgent/logger.js";
 import { PUBLISH_PHASES, runPublishPhase } from "../_lib/publishAgentRunner.js";
 
 /**
- * 发布仓的三个 Agent（2026-09-21 第七轮，见 HANDOFF §0.3）。
+ * 发布仓的 Agent（2026-09-21 第七轮，见 HANDOFF §0.3；封面基底 2026-09-23 增补）。
  *
  * `POST /api/agent/publish`，由 `phase` 分流：
- *   - `cover-plan`    3.1 封面方案（提示词 + 对标封面拆解 + 样式模板 + 背景候选）—— 不花钱
- *   - `cover-image`   3.1 **出图**（唯一花钱的步骤，用户确认提示词后才触发）
- *   - `publish-copy`  3.2 金句 + 互动（标题 / 3s 由前端复用，不走模型）
- *   - `account-tags`  3.3 账号标签库（三角度各 2 候选）
- *   - `topic-tags`    3.3 选题标签（小类x2 + 核心内容x2 + 目标用户x1）
+ *   - `cover-plan`          3.1 封面方案（提示词 + 对标封面拆解 + 样式模板 + 背景候选）—— 不花钱
+ *   - `cover-base-analysis` 3.1 封面基底第一步：拆解**用户上传的对标封面图**（视觉模型，不出图）
+ *   - `cover-image`         3.1 **出图**（唯一花钱的步骤，用户确认提示词后才触发）
+ *   - `publish-copy`        3.2 金句 + 互动（标题 / 3s 由前端复用，不走模型）
+ *   - `account-tags`        3.3 账号标签库（三角度各 2 候选）
+ *   - `topic-tags`          3.3 选题标签（小类x2 + 核心内容x2 + 目标用户x1）
  *
  * 鉴权：`requireAuth`（登录即可）。发布仓在**员工端**，与
  * `/api/agent/benchmark-topic-refresh` 同一条口径（§0.1「脚本/标签分析对所有登录用户开放」）。

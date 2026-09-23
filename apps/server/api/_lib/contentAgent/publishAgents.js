@@ -16,10 +16,12 @@
  */
 
 import { getContentAgentConfig } from "./config.js";
-import { PUBLISH_COPY_PROMPT, PUBLISH_COVER_PROMPT, PUBLISH_TAGS_PROMPT } from "./prompts.js";
-import { runJsonAgent } from "./providers.js";
+import { BENCHMARK_COVER_ANALYSIS_PROMPT, PUBLISH_COPY_PROMPT, PUBLISH_COVER_PROMPT, PUBLISH_TAGS_PROMPT } from "./prompts.js";
+import { runJsonAgent, understandDoubaoImage } from "./providers.js";
+import { parseJsonAgentOutput } from "./adapter.js";
 import {
   normalizeAccountTags,
+  normalizeBenchmarkCoverAnalysis,
   normalizeCoverPlan,
   normalizePublishCopy,
   normalizeTopicTags,
@@ -123,6 +125,21 @@ export const runPublishCopyAgent = async (input, reuse = {}, config = getContent
     normalizer: value => value,
   }, config, options);
   return normalizePublishCopy(agentValue, reuse);
+};
+
+/** 3.1 封面基底第一步：上传一张对标封面图 → 拆解（画风 / 元素 / 排版 / 视觉风格 + 留白 + 标题样式）。 */
+export const runBenchmarkCoverAnalysisAgent = async (imageUrl, config = getContentAgentConfig(), options = {}) => {
+  const text = await understandDoubaoImage(imageUrl, BENCHMARK_COVER_ANALYSIS_PROMPT, config, options);
+  let parsed;
+  try {
+    parsed = parseJsonAgentOutput(text);
+  } catch {
+    // 拆解不出结构就别硬塞给用户看一段自由文本 —— 让调用方按 502 如实报错，用户重传一次即可。
+    const error = new Error("对标封面拆解没有返回可解析的 JSON，请重新上传或换一张图");
+    error.code = "BENCHMARK_COVER_ANALYSIS_BAD_JSON";
+    throw error;
+  }
+  return normalizeBenchmarkCoverAnalysis(parsed);
 };
 
 /** 3.3 发布标签：phase=account 出账号标签库；phase=topic 出选题标签。 */

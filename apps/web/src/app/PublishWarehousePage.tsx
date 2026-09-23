@@ -1,9 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { Upload } from "lucide-react";
+import { Check, Upload } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
-import { Badge } from "./components/ui/badge";
 import { apiUrl, fetchWithRetry } from "./api";
 import { parseApiError } from "./reportApi";
 import { clearCachedFinalDrafts, readCachedFinalDrafts } from "./finalDraftCache";
@@ -60,9 +59,9 @@ import type {
 type TopicLike = PublishTopicLike;
 
 const TABS = [
-  { id: "cover", label: "3.1 封面", hint: "按内容定位出提示词，确认后出图" },
-  { id: "copy", label: "3.2 发布文案", hint: "金句 / 标题 / 3s / 互动" },
-  { id: "tags", label: "3.3 发布标签", hint: "账号恒定标签 + 选题标签" },
+  { id: "cover", label: "3.1 封面" },
+  { id: "copy", label: "3.2 发布文案" },
+  { id: "tags", label: "3.3 发布标签" },
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
@@ -153,8 +152,8 @@ function UploadDropzone({ label, hint, image, onPick }: {
         const file = event.dataTransfer?.files?.[0] || null;
         if (file) onPick(file);
       }}
-      className={`block cursor-pointer rounded-2xl border-2 border-dashed px-5 py-6 text-center transition ${
-        over ? "border-blue-400 bg-blue-50" : "border-slate-300 bg-slate-50 hover:border-blue-300 hover:bg-blue-50/40"
+      className={`flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed px-4 py-4 text-center transition ${
+        over ? "border-blue-400 bg-blue-50" : "border-slate-300 hover:border-blue-300 hover:bg-blue-50/40"
       }`}
     >
       <input
@@ -170,16 +169,16 @@ function UploadDropzone({ label, hint, image, onPick }: {
       />
       {src ? (
         <>
-          <img src={src} alt={label} className="mx-auto max-h-44 rounded-xl border border-slate-200 object-contain" />
-          <div className="mt-2.5 text-xs text-slate-500">点这里或拖一张新图替换</div>
+          <img src={src} alt={label} className="mx-auto max-h-32 rounded-lg border border-slate-200 object-contain" />
+          <div className="mt-2 text-[11px] text-slate-400">点击或拖入替换</div>
         </>
       ) : (
         <>
-          <span className="mx-auto flex h-11 w-11 items-center justify-center rounded-full bg-white text-blue-600 shadow-sm">
-            <Upload className="h-5 w-5" />
+          <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-blue-50 text-blue-600">
+            <Upload className="h-4 w-4" />
           </span>
-          <span className="mt-2.5 block text-sm font-medium text-slate-700">{label}</span>
-          <span className="mt-1 block text-xs text-slate-400">{hint}</span>
+          <span className="mt-2 block text-xs font-medium text-slate-700">{label}</span>
+          <span className="mt-0.5 block text-[11px] text-slate-400">{hint}</span>
         </>
       )}
     </label>
@@ -210,18 +209,17 @@ export default function PublishWarehousePage() {
 
   // 3.1 封面
   const [coverPlan, setCoverPlan] = useState<CoverPlan | null>(null);
-  const [coverPlanTopicId, setCoverPlanTopicId] = useState("");
   const [coverLoading, setCoverLoading] = useState(false);
   const [coverImageLoading, setCoverImageLoading] = useState("");
 
-  // 3.1 的子页：三种类型各一层 + 两个可复用 Agent 各自一个独立板块（用户口径）。
+  // 3.1 的子页：就三种类型（各一层）。两个可复用 Agent 的 UI 在每一层里按需引用，
+  // **不再单独开页签** —— 页签只切三个类型之后，独立板块那条路已经不可达（见 3.1 里的注释）。
   // 进入某一层只是「看一下」，类型在保存基底时才落库。
   const [coverSubTab, setCoverSubTab] = useState<string>("standard");
   const [coverTiers, setCoverTiers] = useState<CoverTier[]>([]);
   const [coverBase, setCoverBase] = useState<CoverBase | null>(null);
   const [coverBaseLoading, setCoverBaseLoading] = useState(false);
   const [coverBaseSaving, setCoverBaseSaving] = useState(false);
-  const [analysisLoading, setAnalysisLoading] = useState(false);
   const [recognizeLoading, setRecognizeLoading] = useState(false);
   const [styleLoading, setStyleLoading] = useState(false);
   const [styleInput, setStyleInput] = useState("");
@@ -427,7 +425,6 @@ export default function PublishWarehousePage() {
       return;
     }
     setRecognizeLoading(true);
-    setAnalysisLoading(true);
     setError("");
     try {
       const result = await analyzeBenchmarkCover({ image });
@@ -446,7 +443,6 @@ export default function PublishWarehousePage() {
       setError(requestError instanceof Error ? requestError.message : "识别失败，换一张图或重试");
     } finally {
       setRecognizeLoading(false);
-      setAnalysisLoading(false);
     }
   };
 
@@ -622,7 +618,6 @@ export default function PublishWarehousePage() {
         },
       });
       setCoverPlan(result.plan);
-      setCoverPlanTopicId(String(topic.id || ""));
       // 出方案顺带把第一个背景候选填进「这一期的背景」输入框，用户可直接改（一类的候选提示词不上这儿用）。
       setPerTopicBackgroundPrompt(prev => prev.trim() ? prev : String(result.plan?.backgrounds?.[0]?.prompt || ""));
       if (!result.imageGenerationAvailable) {
@@ -1033,24 +1028,44 @@ export default function PublishWarehousePage() {
   const confirmedAccountTagList = Object.values(accountConfirmed).filter(Boolean);
 
   // ── 3.1 的可复用积木 ────────────────────────────────────────────────────────
-  // 两个 Agent 的 UI 在「三类各自的层」和「它们自己的独立板块」里是**同一份**，
-  // 所以抽成变量复用，别写两遍（写两遍迟早只改一处）。
+  // 两个 Agent（IP 形象照 / 个性化背景模板）在二、三类的层里都要用，所以抽成变量复用，
+  // 别在两处各写一遍（写两遍迟早只改一处）。
+
+  // ── 本页统一的视觉词表 ──────────────────────────────────────────────────────
+  // 与全站同一套语言：白卡 + slate-200 边框 + rounded-xl；blue-600 只给主操作，
+  // 其余一律 outline / ghost；选中态 = blue-50 + blue-400（与内容生成页一致）；状态一律圆点。
+  // 要治的是「散、不工整、AI 味」：同款大蓝钮只留一个、粉彩 chip 清零、间距全部走 4 的倍数。
+  const BTN_PRIMARY = "h-9 rounded-xl bg-blue-600 px-4 text-[13px] font-medium text-white shadow-sm transition hover:bg-blue-700 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50";
+  const BTN_PRIMARY_LG = "h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm transition hover:bg-blue-700 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-50";
+  const BTN_MD = "h-9 rounded-xl border border-slate-200 bg-white px-3.5 text-[13px] font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50";
+  const BTN_SM = "h-8 rounded-lg border border-slate-200 bg-white px-3 text-xs font-medium text-slate-600 shadow-sm transition hover:border-slate-300 hover:text-slate-900 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-50";
+  const BTN_GHOST_SM = "h-8 rounded-lg px-2.5 text-xs font-medium text-slate-500 transition hover:bg-slate-100 hover:text-slate-800 disabled:cursor-not-allowed disabled:opacity-50";
+  const CARD = "rounded-xl border border-slate-200 bg-white shadow-sm";
+  const INPUT = "w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-[13px] transition placeholder:text-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100";
+  const INPUT_SM = "rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs transition placeholder:text-slate-400 focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-100";
+  const LABEL = "text-xs font-medium text-slate-600";
+  const CHIP_ON = "border-blue-400 bg-blue-50 font-medium text-blue-700";
+  const CHIP_OFF = "border-slate-200 bg-white text-slate-600 hover:border-slate-300";
+  const SEG_WRAP = "inline-flex items-center rounded-xl border border-slate-200 bg-slate-100/70 p-1";
+  const SEG_ON = "bg-white font-medium text-slate-900 shadow-sm";
+  const SEG_OFF = "text-slate-500 hover:text-slate-800";
+  const EMPTY_BOX = "rounded-xl border border-dashed border-slate-300 px-4 py-10 text-center text-[13px] text-slate-400";
 
   /** 上传一张图 → 视觉模型识别标题样式（三类共用的一步）。 */
   const recognizeBlock = (image: { url: string; dataUrl: string } | null, onPick: (file: File) => void, label: string, hint: string) => (
-    <div className="space-y-3">
+    <div className="space-y-2">
       <UploadDropzone label={label} hint={hint} image={image} onPick={onPick} />
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="outline" disabled={recognizeLoading || !image} onClick={() => runRecognize(image)}>
-          {recognizeLoading ? "识别中…" : "用视觉模型识别标题样式"}
+        <Button variant="outline" className={BTN_SM} disabled={recognizeLoading || !image} onClick={() => runRecognize(image)}>
+          {recognizeLoading ? "识别中…" : "识别标题样式"}
         </Button>
         {image && (
           <Button
-            variant="outline"
-            className="text-slate-500"
+            variant="ghost"
+            className={BTN_GHOST_SM}
             onClick={() => { setBaseSourceImage(null); setBaseAnalysis(null); setBaseTitleStyle(null); setRecognizedStyle(null); }}
           >
-            移除这张图
+            移除
           </Button>
         )}
       </div>
@@ -1059,29 +1074,41 @@ export default function PublishWarehousePage() {
 
   /** 识别结果 + 一句话改样式的话框。 */
   const titleStyleBlock = (
-    <div className="space-y-3 border-t border-slate-100 pt-4">
-      <div className="flex flex-wrap items-center gap-2">
-        <div className="text-xs font-semibold text-slate-600">标题样式</div>
-        <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">由视觉模型识别，可继续用一句话改</Badge>
+    <div className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span className={LABEL}>标题样式</span>
+        {/* 色块 = 颜色，一眼看到；没有样式就全是「待识别」的浅灰字，不用再写一句提示。 */}
+        {baseTitleStyle?.color && (
+          <span
+            className="h-3.5 w-3.5 rounded border border-slate-200"
+            style={{ backgroundColor: baseTitleStyle.color }}
+            title={baseTitleStyle.color}
+          />
+        )}
+        <span className="text-[11px] text-slate-400">可一句话改</span>
       </div>
-      <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
-        <div className="grid gap-1 sm:grid-cols-2">
-          <div>字体：{baseTitleStyle?.fontFamily || "待识别"}</div>
-          <div>颜色：{baseTitleStyle?.color || "待识别"}</div>
-          <div>位置：{{ top: "上", center: "中", bottom: "下" }[baseTitleStyle?.position || "bottom"]}</div>
-          <div>基准字号：{baseTitleStyle?.fontSizePx ?? 64}px（下限 {baseTitleStyle?.minFontSizePx ?? 36}px）</div>
-          <div>最多行数：{baseTitleStyle?.maxLines ?? 2}</div>
-        </div>
-        {baseTitleStyle?.note ? <div className="mt-1 text-slate-400">备注：{baseTitleStyle.note}</div> : null}
-        {!baseTitleStyle && <div className="mt-1 text-amber-700">还没有样式 —— 先在上面上传一张图并识别。</div>}
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
+        {[
+          ["字体", baseTitleStyle?.fontFamily],
+          ["位置", { top: "上", center: "中", bottom: "下" }[baseTitleStyle?.position || "bottom"]],
+          ["字号", `${baseTitleStyle?.fontSizePx ?? 64}px`],
+          ["下限", `${baseTitleStyle?.minFontSizePx ?? 36}px`],
+          ["行数", String(baseTitleStyle?.maxLines ?? 2)],
+        ].map(([key, value]) => (
+          <span key={key}>
+            <span className="text-slate-400">{key}</span>{" "}
+            <span className="font-medium text-slate-700">{value || "待识别"}</span>
+          </span>
+        ))}
       </div>
+      {baseTitleStyle?.note && <div className="truncate text-[11px] text-slate-400" title={baseTitleStyle.note}>{baseTitleStyle.note}</div>}
       {styleChat.length > 0 && (
-        <div className="space-y-1.5">
-          {styleChat.map((item, index) => (
+        <div className="space-y-1">
+          {styleChat.slice(-4).map((item, index) => (
             <div
               key={`${item.role}-${index}`}
-              className={`rounded-xl px-3 py-2 text-xs leading-5 ${
-                item.role === "user" ? "ml-6 bg-blue-50 text-blue-900" : "mr-6 bg-slate-50 text-slate-600"
+              className={`rounded-lg px-2.5 py-1.5 text-[11px] leading-4 ${
+                item.role === "user" ? "ml-6 bg-slate-100 text-slate-700" : "mr-6 bg-slate-50 text-slate-500"
               }`}
             >
               {item.text}
@@ -1094,11 +1121,12 @@ export default function PublishWarehousePage() {
           value={styleInput}
           onChange={event => setStyleInput(event.target.value)}
           onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); runStyleRefine(); } }}
-          placeholder="用一句话说怎么改，例如「字号大一点、换成金色描边」"
-          className="min-w-[260px] flex-1 rounded-xl border border-slate-300 px-3 py-2.5 text-sm"
+          placeholder="一句话改样式，如「字号大一点、金色描边」"
+          className={`min-w-[200px] flex-1 ${INPUT_SM}`}
         />
         <Button
-          className="bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+          variant="outline"
+          className={BTN_SM}
           disabled={styleLoading || !styleInput.trim()}
           onClick={runStyleRefine}
         >
@@ -1110,18 +1138,19 @@ export default function PublishWarehousePage() {
 
   /** IP 形象照（可复用 Agent）。 */
   const portraitBlock = (
-    <div className="space-y-3">
-      <p className="text-xs leading-5 text-slate-500">
-        穿着 / 场景来自账号规划的<span className="font-medium text-slate-700">内容定位与职业</span>，
-        表情 / 动作来自<span className="font-medium text-slate-700">人设定位</span>。
-        先出提示词建议，人工改过之后再结合客户参考照片出图 —— 出图是唯一花钱的一步，所以确认提示词才触发。
-      </p>
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className={LABEL}>IP 形象照</span>
+        <span className="text-[11px] text-slate-400" title="穿着/场景取自账号规划的内容定位与职业，表情/动作取自人设定位；出图是唯一花钱的一步，确认提示词才触发">
+          确认提示词后才出图
+        </span>
+      </div>
       <div className="flex flex-wrap gap-2">
-        <Button variant="outline" disabled={portraitLoading} onClick={runPortraitPlan}>
-          {portraitLoading ? "生成中…" : "给出形象照提示词建议"}
+        <Button variant="outline" className={BTN_SM} disabled={portraitLoading} onClick={runPortraitPlan}>
+          {portraitLoading ? "生成中…" : "生成提示词建议"}
         </Button>
-        <label className="inline-flex cursor-pointer items-center rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 transition hover:border-slate-300">
-          上传客户参考照片
+        <label className={`inline-flex cursor-pointer items-center ${BTN_SM}`}>
+          参考照片
           <input
             type="file"
             accept="image/*"
@@ -1134,106 +1163,104 @@ export default function PublishWarehousePage() {
           />
         </label>
       </div>
-      {basePortraitBasis && <div className="text-xs text-slate-400">依据：{basePortraitBasis}</div>}
-      {basePortraitImage && (
-        <img
-          src={basePortraitImage.url || basePortraitImage.dataUrl}
-          alt="IP 人像"
-          className="w-full max-w-[170px] rounded-xl border border-slate-200 object-cover"
-        />
-      )}
-      <div>
-        <label className="text-xs font-semibold text-slate-600">形象照提示词（可改，确认后再出图）</label>
-        <textarea
-          value={basePortraitPrompt}
-          onChange={event => setBasePortraitPrompt(event.target.value)}
-          rows={3}
-          placeholder="先点「给出形象照提示词建议」，或直接写"
-          className="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
-        />
+      {/* 有图就给缩略图，没有就给一个占位格 —— 用看得见的东西表达「有没有」。 */}
+      <div className="flex items-center gap-2">
+        <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+          {basePortraitImage ? (
+            <img
+              src={basePortraitImage.url || basePortraitImage.dataUrl}
+              alt="IP 人像"
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center text-[11px] text-slate-300">人像</span>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 truncate text-[11px] text-slate-400" title={basePortraitBasis || ""}>
+          {basePortraitBasis || "还没生成提示词"}
+        </div>
       </div>
+      <textarea
+        value={basePortraitPrompt}
+        onChange={event => setBasePortraitPrompt(event.target.value)}
+        rows={3}
+        placeholder="形象照提示词，可改"
+        className={`w-full resize-none leading-5 ${INPUT_SM}`}
+      />
       <Button
-        className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+        variant="outline"
+        className={`w-full ${BTN_SM}`}
         disabled={baseImageLoading === "portrait" || !basePortraitPrompt.trim()}
         onClick={() => makeBaseImage("portrait")}
       >
-        {baseImageLoading === "portrait" ? "出图中…（较慢）" : "确认提示词并生成 IP 形象照"}
+        {baseImageLoading === "portrait" ? "出图中…（较慢）" : "生成形象照"}
       </Button>
     </div>
   );
 
   /** 个性化背景模板（可复用 Agent）：上传对标封面 → 拆解 → 生成模板。 */
   const backgroundBlock = (
-    <div className="space-y-3">
-      <p className="text-xs leading-5 text-slate-500">
-        上传一张对标封面，先拆出<span className="font-medium text-slate-700">画风 / 元素 / 排版 / 视觉风格</span>，
-        再模仿它生成自家的背景风格模板，并空出留白区域（标题位、人像位）。
-      </p>
+    <div className="space-y-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className={LABEL}>背景风格模板</span>
+        <span className="text-[11px] text-slate-400" title="拆出对标封面的画风 / 元素 / 排版 / 视觉风格，再模仿生成自家的模板，并空出标题位与人像位的留白">
+          拆解对标 → 生成留白模板
+        </span>
+      </div>
       {recognizeBlock(
         baseSourceImage,
         file => handleBaseImageUpload(file, image => { setBaseSourceImage(image); setBaseAnalysis(null); }),
         "上传对标封面",
-        "把一张对标封面拖进来，或点击选择；PNG / JPG 都可以",
+        "拖入或点击选择",
       )}
+      {/* 拆解结果：灰标签 + 深值，一行扫完，不再包一层 chip。 */}
       {baseAnalysis && (
-        <div className="space-y-2 rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
+        <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs text-slate-500">
           {[
             ["画风", baseAnalysis.artStyle],
             ["元素", baseAnalysis.elements],
             ["排版", baseAnalysis.layout],
-            ["视觉风格", baseAnalysis.visualStyle],
+            ["视觉", baseAnalysis.visualStyle],
+            ["留白", baseAnalysis.reservedAreas.length > 0 ? baseAnalysis.reservedAreas.join("；") : ""],
           ].map(([label, value]) => (
-            <div key={label}>
-              <span className="font-semibold text-slate-700">{label}</span>：{value || "待人工补充"}
-            </div>
+            <span key={label} className="max-w-full truncate" title={String(value || "待人工补充")}>
+              <span className="text-slate-400">{label}</span>{" "}
+              <span className="font-medium text-slate-700">{value || "待补充"}</span>
+            </span>
           ))}
-          <div>
-            <span className="font-semibold text-slate-700">留白区域</span>：
-            {baseAnalysis.reservedAreas.length > 0 ? baseAnalysis.reservedAreas.join("；") : "待人工补充"}
-          </div>
         </div>
       )}
-      {baseBackgroundTemplate && (
-        <img
-          src={baseBackgroundTemplate.url || baseBackgroundTemplate.dataUrl}
-          alt="背景风格模板"
-          className="w-full max-w-[220px] rounded-xl border border-slate-200 object-cover"
-        />
-      )}
-      <div>
-        <label className="text-xs font-semibold text-slate-600">背景模板提示词（可改，确认后再出图）</label>
-        <textarea
-          value={baseBackgroundPrompt}
-          onChange={event => setBaseBackgroundPrompt(event.target.value)}
-          rows={4}
-          placeholder="先拆解对标封面，会自动填入一份可改的提示词；也可以直接写"
-          className="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
-        />
+      <div className="flex items-center gap-2">
+        <div className="h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-slate-200 bg-slate-50">
+          {baseBackgroundTemplate ? (
+            <img
+              src={baseBackgroundTemplate.url || baseBackgroundTemplate.dataUrl}
+              alt="背景风格模板"
+              className="h-full w-full object-cover"
+            />
+          ) : (
+            <span className="flex h-full w-full items-center justify-center text-[11px] text-slate-300">模板</span>
+          )}
+        </div>
+        <div className="min-w-0 flex-1 text-[11px] text-slate-400">
+          {baseBackgroundTemplate ? "模板已生成" : "还没生成背景模板"}
+        </div>
       </div>
+      <textarea
+        value={baseBackgroundPrompt}
+        onChange={event => setBaseBackgroundPrompt(event.target.value)}
+        rows={3}
+        placeholder="背景模板提示词，可改"
+        className={`w-full resize-none leading-5 ${INPUT_SM}`}
+      />
       <Button
-        className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+        variant="outline"
+        className={`w-full ${BTN_SM}`}
         disabled={baseImageLoading === "backgroundTemplate" || !baseBackgroundPrompt.trim()}
         onClick={() => makeBaseImage("backgroundTemplate")}
       >
-        {baseImageLoading === "backgroundTemplate" ? "出图中…（较慢）" : "确认提示词并生成背景模板"}
+        {baseImageLoading === "backgroundTemplate" ? "出图中…（较慢）" : "生成背景模板"}
       </Button>
-    </div>
-  );
-
-  /** 保存 / 清空基底（账号级，一次确认长期复用）。 */
-  const baseSaveRow = (
-    <div className="flex flex-wrap items-center gap-2 border-t border-slate-100 pt-4">
-      <Button
-        className="bg-blue-600 text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
-        disabled={coverBaseSaving}
-        onClick={() => persistCoverBase()}
-      >
-        {coverBaseSaving ? "保存中…" : "保存封面基底"}
-      </Button>
-      <Button variant="outline" disabled={coverBaseSaving} onClick={clearCoverBase}>清空重来</Button>
-      {coverBase?.updatedAt && (
-        <span className="self-center text-xs text-slate-400">上次保存：{formatMetTime(coverBase.updatedAt)}</span>
-      )}
     </div>
   );
 
@@ -1247,242 +1274,235 @@ export default function PublishWarehousePage() {
 
   return (
     <div className="min-h-screen bg-[#f5f7fb]">
-      <header className="border-b border-slate-200/80 bg-white/80 px-5 py-6 backdrop-blur sm:px-8 lg:px-10">
-        <div className="mx-auto max-w-[1500px]">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+      {/* 页头与其他页面同一套：白底 + slate-200 分割线 + 左标题右操作。
+          容器收窄到 1200：原来 1500 的内容被拉成一条长线，是「散」的主要来源。 */}
+      <header className="border-b border-slate-200/80 bg-white/80 px-5 py-4 backdrop-blur sm:px-8">
+        <div className="mx-auto max-w-[1200px]">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
-              <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
-                <span className="h-2 w-2 rounded-full bg-blue-600" />
-                PUBLISH WAREHOUSE
-              </div>
-              <h1 className="text-3xl font-semibold tracking-tight text-slate-950">发布仓</h1>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-500">
-                为每条选题确认封面、发布文案与发布标签。确认完进最终文案编辑页保存 ——
-                这三块会<span className="font-medium text-slate-700">并入最终文案</span>，
-                导出飞书文档与多维表格时一并带过去。
+              <h1 className="text-xl font-semibold tracking-tight text-slate-950">发布仓</h1>
+              <p className="mt-0.5 text-[13px] text-slate-500">
+                为每条选题确认封面、文案与标签，确认完进最终文案页。
               </p>
             </div>
-            <div className="flex items-center gap-2.5">
-              <Button
-                variant="outline"
-                className="h-10 rounded-xl border-slate-200 bg-white text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
-                onClick={() => navigate("/content")}
-              >
+            <div className="flex items-center gap-2">
+              <Button variant="outline" className={BTN_MD} onClick={() => navigate("/content")}>
                 返回内容生成
               </Button>
-              <Button
-                className="h-10 rounded-xl bg-blue-600 px-4 text-sm font-semibold text-white shadow-sm hover:bg-blue-700"
-                onClick={goToFinalEditor}
-              >
+              <Button className={BTN_PRIMARY} onClick={goToFinalEditor}>
                 进入最终文案编辑页
               </Button>
             </div>
           </div>
           {!customerId && (
-            <div className="mt-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
-              没有读到客户信息（`contentCustomerId` 为空）。发布仓的标签与封面都依赖客户选题库，
-              请从「今日选题」正常进入。
+            <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2 text-xs leading-5 text-amber-700">
+              没有读到客户信息，发布仓依赖客户选题库，请从「今日选题」正常进入。
             </div>
           )}
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1500px] px-5 py-6 sm:px-8 lg:px-10">
+      {/* 统一节奏：子块间距全部 16px（space-y-4），不再各处自定义 mb。 */}
+      <main className="mx-auto max-w-[1200px] space-y-4 px-5 py-5 sm:px-8">
         {error && (
-          <div className="mb-4 rounded-xl border border-red-100 bg-red-50 px-4 py-3 text-xs leading-5 text-red-700">{error}</div>
+          <div className="rounded-lg border border-red-200/70 bg-red-50 px-3.5 py-2.5 text-xs leading-5 text-red-700">{error}</div>
         )}
         {message && (
-          <div className="mb-4 rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-700">{message}</div>
+          <div className="rounded-lg border border-emerald-200/70 bg-emerald-50 px-3.5 py-2.5 text-xs leading-5 text-emerald-700">{message}</div>
         )}
 
-        {/* 选题切换 */}
-        <Card className="mb-5 border-slate-200 bg-white">
-          <CardHeader className="pb-3">
-            <div className="flex items-center justify-between">
-              <CardTitle className="text-base font-semibold text-slate-900">
-                选题 {selectedTopics.length > 0 ? `${activeTopicIndex + 1} / ${selectedTopics.length}` : "（无）"}
-              </CardTitle>
-              <div className="flex items-center gap-2">
-                {savingTopicId && <span className="text-xs text-slate-400">保存中…</span>}
-                {loadingSelections && <span className="text-xs text-slate-400">读取上次进度…</span>}
-              </div>
-            </div>
-          </CardHeader>
-          <CardContent className="flex flex-wrap gap-2">
-            {selectedTopics.length === 0 ? (
-              <p className="text-sm text-slate-500">没有读到选题，请先在内容生成页确认选题。</p>
-            ) : selectedTopics.map((topic, index) => (
-              <button
-                key={String(topic.id || index)}
-                type="button"
-                onClick={() => {
-                  setActiveTopicIndex(index);
-                  setCoverPlan(null);
-                  setCoverPlanTopicId("");
-                  // 提示词是**按选题**写的，切走必须清掉 —— 否则它的内容与当前选题无关，
-                  // 而「确认提示词并生成封面」是唯一花钱的按钮，带着上一条的提示词出图等于白花钱。
-                  // （参考照片不跟着清：它是**按客户**的 IP 形象照，同一客户下本来就该复用。）
-                  setCopyResult(null);
-                  setTopicTags(null);
-                }}
-                className={`max-w-[280px] truncate rounded-xl border px-3 py-2 text-left text-xs transition ${
-                  index === activeTopicIndex
-                    ? "border-blue-400 bg-blue-50 text-blue-700"
-                    : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-                }`}
-              >
-                {topic.title || "（无标题）"}
-              </button>
-            ))}
-          </CardContent>
-        </Card>
+        {/* 选题切换：原来是一整张卡（标题 + 内容区 ~110px），现在压成一行 chip。 */}
+        <div className="mb-3 flex flex-wrap items-center gap-2">
+          <span className="shrink-0 text-xs font-semibold text-slate-400">
+            选题 {selectedTopics.length > 0 ? `${activeTopicIndex + 1}/${selectedTopics.length}` : "—"}
+          </span>
+          {selectedTopics.length === 0 ? (
+            <span className="text-xs text-slate-400">没有读到选题，请先在内容生成页确认。</span>
+          ) : selectedTopics.map((topic, index) => (
+            <button
+              key={String(topic.id || index)}
+              type="button"
+              onClick={() => {
+                setActiveTopicIndex(index);
+                setCoverPlan(null);
+                // 提示词是**按选题**写的，切走必须清掉 —— 否则它的内容与当前选题无关，
+                // 而「确认提示词并生成封面」是唯一花钱的按钮，带着上一条的提示词出图等于白花钱。
+                // （参考照片不跟着清：它是**按客户**的 IP 形象照，同一客户下本来就该复用。）
+                setCopyResult(null);
+                setTopicTags(null);
+              }}
+              className={`max-w-[260px] truncate rounded-lg border px-3 py-1.5 text-xs transition ${
+                index === activeTopicIndex
+                  ? "border-blue-400 bg-blue-50 font-medium text-blue-700"
+                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+              }`}
+            >
+              {topic.title || "（无标题）"}
+            </button>
+          ))}
+          {(savingTopicId || loadingSelections) && (
+            <span className="ml-auto text-xs text-slate-400">{savingTopicId ? "保存中…" : "读取上次进度…"}</span>
+          )}
+        </div>
 
-        {/* 三块的分栏 */}
-        <div className="mb-5 flex flex-wrap gap-2">
+        {/* 三块主页签：分段控件，只留编号 + 名称（原来的灰字说明挪进各页自己的空态里）。 */}
+        <div className={`mb-4 ${SEG_WRAP}`}>
           {TABS.map(tab => (
             <button
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id)}
-              className={`rounded-xl border px-4 py-2.5 text-left text-sm transition ${
-                activeTab === tab.id ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
-              }`}
+              className={`rounded-lg px-4 py-1.5 text-sm transition ${activeTab === tab.id ? SEG_ON : SEG_OFF}`}
             >
-              <div className={`font-semibold ${activeTab === tab.id ? "text-blue-700" : "text-slate-800"}`}>{tab.label}</div>
-              <div className="mt-0.5 text-xs text-slate-400">{tab.hint}</div>
+              {tab.label}
             </button>
           ))}
         </div>
 
         {/* ── 3.1 封面 ─────────────────────────────────────────────────────── */}
-        {/* 按三种类型分三层；两个可复用 Agent（IP 形象照 / 个性化背景模板）各自独立一个板块。
-            进入某一层只是「看一下」，类型在**保存基底时**才落库 —— 免得随便点一下就改了类型。 */}
+        {/* 三种类型各一层；两个可复用 Agent（IP 形象照 / 个性化背景模板）在二、三类的层里按需引用。
+            类型在**保存基底时**才落库，进来只是看一下。 */}
         {activeTab === "cover" && (
-          <div className="space-y-4">
-            <div className="flex flex-wrap gap-2">
-              {coverTiers.map(tier => {
-                const selected = coverSubTab === tier.id;
-                return (
-                  <button
-                    key={tier.id}
-                    type="button"
-                    onClick={() => { setCoverSubTab(tier.id); setBaseTier(tier.id); }}
-                    className={`rounded-xl border px-4 py-2.5 text-left text-sm transition ${
-                      selected ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-white hover:border-slate-300"
-                    }`}
-                  >
-                    <div className={`font-semibold ${selected ? "text-blue-700" : "text-slate-800"}`}>
+          <div className="space-y-3">
+            {/* 类型页签：分段控件。原来每个页签下面还挂一行灰字说明，收进下面的单行说明里。 */}
+            <div className="flex flex-wrap items-center gap-3">
+              <div className={SEG_WRAP}>
+                {coverTiers.map(tier => {
+                  const selected = coverSubTab === tier.id;
+                  const isBase = coverBase?.tier === tier.id;
+                  return (
+                    <button
+                      key={tier.id}
+                      type="button"
+                      onClick={() => { setCoverSubTab(tier.id); setBaseTier(tier.id); }}
+                      className={`flex items-center gap-1.5 rounded-lg px-3.5 py-1.5 text-sm transition ${selected ? SEG_ON : SEG_OFF}`}
+                    >
                       {tier.code}、{tier.label}
-                    </div>
-                    <div className="mt-0.5 text-xs text-slate-400">{tier.summary}</div>
-                  </button>
-                );
-              })}
-              {coverTiers.length === 0 && (
-                <span className="self-center text-xs text-slate-400">类型定义没读到，检查接口后刷新。</span>
-              )}
+                      {/* 绿点 = 这个类型已是保存过的基底，用颜色代替一行文字 */}
+                      {isBase && <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />}
+                    </button>
+                  );
+                })}
+              </div>
+              {coverTiers.length === 0 && <span className="text-xs text-slate-400">类型定义没读到，检查接口后刷新。</span>}
+              {coverBaseLoading && <span className="text-xs text-slate-400">读取上次的封面基底…</span>}
             </div>
 
-            <div className="flex flex-wrap items-center gap-2 border-l-2 border-slate-200 pl-4">
-              <span className="text-xs text-slate-400">可复用 Agent（三类里按需引用，也可以单独用）：</span>
-              {[
-                { id: "portrait", label: "IP 形象照" },
-                { id: "background", label: "个性化背景模板" },
-              ].map(item => (
-                <button
-                  key={item.id}
-                  type="button"
-                  onClick={() => setCoverSubTab(item.id)}
-                  className={`rounded-xl border px-3.5 py-2 text-xs transition ${
-                    coverSubTab === item.id ? "border-blue-400 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-                  }`}
+            {/* 选中类型的一行说明。原来是整张说明卡；summary / note / 使用节点全是「规则」，
+                挪进 title 悬浮，可见的只留：类型名、用到什么、基底状态。 */}
+            {activeTier && (
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
+                <span
+                  className="font-semibold text-slate-700 underline decoration-dotted decoration-slate-300 underline-offset-4"
+                  title={`${activeTier.label}：${activeTier.summary}。${activeTier.note}。使用节点：${activeTier.whenToUse}`}
                 >
-                  {item.label}
-                </button>
-              ))}
-            </div>
+                  {activeTier.label}
+                </span>
+                <span className="flex items-center gap-1">
+                  {activeTierIds(activeTier).length > 0 ? (
+                    <>
+                      <span className="text-slate-400">用到</span>
+                      {activeTierIds(activeTier).map(name => (
+                        <span key={name} className="rounded bg-blue-50 px-1.5 py-0.5 text-[11px] font-medium text-blue-600">{name}</span>
+                      ))}
+                    </>
+                  ) : (
+                    <span className="text-slate-400">不需要额外素材</span>
+                  )}
+                </span>
+                {activeTier.needsPortrait && !activeTier.canGeneratePortrait && (
+                  <span className="text-slate-400">人像沿用已有那张</span>
+                )}
+                {coverBase?.tier === activeTier.id
+                  ? <span className="inline-flex items-center gap-1 font-medium text-emerald-600"><span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />已是当前基底</span>
+                  : <span className="text-slate-400">保存基底后才切到这一类</span>}
+              </div>
+            )}
 
             {activeTier ? (
-              <div className="space-y-4">
-                {coverBaseLoading && <div className="text-xs text-slate-400">读取上次的封面基底…</div>}
+              <div className="space-y-3">
 
-                {/* 这一层是干什么的 + 用到哪些 Agent */}
-                <Card className="border-slate-200 bg-white">
-                  <CardContent className="space-y-2 pt-6">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <span className="text-sm font-semibold text-slate-800">{activeTier.code}、{activeTier.label}</span>
-                      <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">{activeTier.summary}</Badge>
-                      {coverBase?.tier === activeTier.id
-                        ? <Badge className="bg-emerald-50 text-emerald-600 hover:bg-emerald-50">当前基底类型</Badge>
-                        : <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">保存后才会切到这一类</Badge>}
-                    </div>
-                    <p className="text-xs leading-5 text-slate-500">{activeTier.note}</p>
-                    <p className="text-xs text-slate-400">使用节点：{activeTier.whenToUse}</p>
-                    <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                      <span className="text-xs text-slate-400">这一类用到的可复用 Agent：</span>
-                      {activeTierIds(activeTier).length > 0
-                        ? activeTierIds(activeTier).map(name => (
-                          <Badge key={name} className="bg-blue-50 text-blue-600 hover:bg-blue-50">{name}</Badge>
-                        ))
-                        : <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">两个都不用</Badge>}
-                      {activeTier.needsPortrait && !activeTier.canGeneratePortrait && (
-                        <span className="text-xs text-slate-400">（人像沿用已有的那一张，不重跑形象照 Agent）</span>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                {/* 信息上传（原来「准备素材」与「标题样式」合成一块） */}
-                <Card className="border-slate-200 bg-white">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base font-semibold text-slate-900">上传这一类的素材</CardTitle>
-                  </CardHeader>
-                  <CardContent className="space-y-4">
-                    {activeTier.id === "standard" ? (
-                      <div className="space-y-3">
-                        <div className="text-xs font-semibold text-slate-600">固定封面模板（含固定人像与固定背景）</div>
-                        {recognizeBlock(
-                          baseSourceImage,
-                          file => handleBaseImageUpload(file, image => { setBaseSourceImage(image); setBaseAnalysis(null); }),
-                          "上传固定封面模板",
-                          "把已经做好的模板图拖进来，或点击选择；之后每一期只换标题",
+                {/* 素材区：两个 Agent 并排（原来竖着叠成一面墙），保存 / 清空收进标题行，
+                    有没有素材用缩略图 + 状态点表达，不再靠一行「还缺 X」的文字。 */}
+                <Card className={CARD}>
+                  <CardHeader className="pb-2">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <CardTitle className="text-sm font-semibold text-slate-900">封面基底</CardTitle>
+                      <div className="flex items-center gap-2">
+                        {coverBase?.updatedAt && (
+                          <span className="text-xs text-slate-400">上次保存 {formatMetTime(coverBase.updatedAt)}</span>
                         )}
+                        <Button variant="outline" className="h-8 rounded-lg px-3 text-xs" disabled={coverBaseSaving} onClick={clearCoverBase}>
+                          清空重来
+                        </Button>
+                        <Button
+                          className="h-8 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-55"
+                          disabled={coverBaseSaving}
+                          onClick={() => persistCoverBase()}
+                        >
+                          {coverBaseSaving ? "保存中…" : "保存为基底"}
+                        </Button>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
+                    {activeTier.id === "standard" ? (
+                      <div className="grid gap-3 lg:grid-cols-2">
+                        <div className="rounded-xl border border-slate-200 p-3">
+                          {recognizeBlock(
+                            baseSourceImage,
+                            file => handleBaseImageUpload(file, image => { setBaseSourceImage(image); setBaseAnalysis(null); }),
+                            "上传固定封面模板",
+                            "之后每一期只换标题",
+                          )}
+                        </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">{titleStyleBlock}</div>
                       </div>
                     ) : (
-                      <div className="space-y-5">
-                        <div>
-                          <div className="mb-2 text-xs font-semibold text-slate-600">① 个性化背景模板</div>
-                          {backgroundBlock}
+                      <>
+                        <div className="grid gap-3 lg:grid-cols-2">
+                          <div className="rounded-xl border border-slate-200 p-3">{backgroundBlock}</div>
+                          <div className="rounded-xl border border-slate-200 p-3">{portraitBlock}</div>
                         </div>
-                        <div className="border-t border-slate-100 pt-4">
-                          <div className="mb-2 text-xs font-semibold text-slate-600">② IP 形象照</div>
-                          {portraitBlock}
-                        </div>
-                      </div>
+                        <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">{titleStyleBlock}</div>
+                      </>
                     )}
-                    {titleStyleBlock}
-                    {baseSaveRow}
                   </CardContent>
                 </Card>
 
                 {/* 这一期出封面 */}
-                <Card className="border-slate-200 bg-white">
-                  <CardHeader className="pb-3">
+                <Card className={CARD}>
+                  <CardHeader className="pb-2">
                     <div className="flex flex-wrap items-center justify-between gap-2">
-                      <CardTitle className="text-base font-semibold text-slate-900">这一期出封面</CardTitle>
-                      {coverReadiness.ok
-                        ? <Badge className="bg-emerald-50 text-emerald-600 hover:bg-emerald-50">素材齐了</Badge>
-                        : <Badge className="bg-amber-50 text-amber-700 hover:bg-amber-50">还缺：{coverReadiness.missing.join("、")}</Badge>}
+                      <CardTitle className="text-sm font-semibold text-slate-900">这一期出封面</CardTitle>
+                      {/* 就绪度用颜色表达：绿点 = 齐了；缺什么就给几个琥珀色 chip，
+                          不再写一句「还缺 X —— 先在上面补齐」重复上面 chip 已经说过的话。 */}
+                      {coverReadiness.ok ? (
+                        <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500" />素材齐了
+                        </span>
+                      ) : (
+                        <span className="flex flex-wrap items-center gap-1">
+                          {coverReadiness.missing.map(name => (
+                            <span key={name} className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">缺 {name}</span>
+                          ))}
+                        </span>
+                      )}
                     </div>
                   </CardHeader>
-                  <CardContent className="space-y-4">
+                  <CardContent className="space-y-3">
                     <div>
-                      <label className="text-xs font-semibold text-slate-600">这一期的标题</label>
+                      <div className="flex items-center justify-between gap-2">
+                        <label className="text-xs font-semibold text-slate-600">这一期的标题</label>
+                        <span className="text-[11px] text-slate-400">
+                          {fontSizeFor(perTopicTitle)}px{titleMetrics.find(item => item.title === perTopicTitle)?.shrunk && " · 已收缩"}
+                        </span>
+                      </div>
                       <input
                         value={perTopicTitle}
                         onChange={event => setPerTopicTitle(event.target.value)}
                         placeholder="这一期要用的标题"
-                        className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm"
+                        className={`mt-1.5 ${INPUT}`}
                       />
                       {reuseTitles.length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-2">
@@ -1492,7 +1512,7 @@ export default function PublishWarehousePage() {
                               type="button"
                               onClick={() => setPerTopicTitle(item)}
                               className={`max-w-[260px] truncate rounded-lg border px-3 py-1.5 text-xs transition ${
-                                perTopicTitle === item ? "border-blue-400 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                                perTopicTitle === item ? CHIP_ON : CHIP_OFF
                               }`}
                             >
                               {item}
@@ -1500,38 +1520,33 @@ export default function PublishWarehousePage() {
                           ))}
                         </div>
                       )}
-                      <div className="mt-1.5 text-xs text-slate-500">
-                        字号按标题长度与留白空间自动定：
-                        <span className="font-medium text-slate-800">{fontSizeFor(perTopicTitle)}px</span>
-                        {titleMetrics.find(item => item.title === perTopicTitle)?.shrunk && "（已按长度收缩）"}
-                      </div>
                     </div>
 
                     {activeTier.perIssueFields.includes("backgroundPrompt") && (
                       <div>
                         <div className="flex flex-wrap items-center justify-between gap-2">
-                          <label className="text-xs font-semibold text-slate-600">这一期的背景（围绕脚本关键词）</label>
-                          <Button variant="outline" disabled={coverLoading || !activeTopic} onClick={loadCoverPlan}>
-                            {coverLoading ? "生成中…" : "按脚本给提示词建议"}
+                          <label className="text-xs font-semibold text-slate-600">这一期的背景</label>
+                          <Button variant="outline" className="h-8 rounded-lg px-3 text-xs" disabled={coverLoading || !activeTopic} onClick={loadCoverPlan}>
+                            {coverLoading ? "生成中…" : "按脚本建议"}
                           </Button>
                         </div>
                         <textarea
                           value={perTopicBackgroundPrompt}
                           onChange={event => setPerTopicBackgroundPrompt(event.target.value)}
-                          rows={4}
-                          placeholder="先点右上角按脚本生成候选提示词，再挑一个改；也可以直接写"
-                          className="mt-1.5 w-full rounded-xl border border-slate-300 p-3 text-xs leading-5"
+                          rows={3}
+                          placeholder="围绕脚本关键词的背景提示词"
+                          className={`mt-1.5 ${INPUT} leading-5`}
                         />
                         {(coverPlan?.backgrounds || []).length > 0 && (
-                          <div className="mt-2 space-y-2">
+                          <div className="mt-2 space-y-1.5">
                             {(coverPlan?.backgrounds || []).map(background => (
-                              <div key={background.id} className="flex items-start gap-2 rounded-xl border border-slate-200 px-3 py-2.5">
+                              <div key={background.id} className="flex items-center gap-2 rounded-lg border border-slate-200 px-2.5 py-1.5">
                                 <div className="min-w-0 flex-1">
-                                  <div className="text-xs font-medium text-slate-800">{background.title}</div>
-                                  <div className="mt-1 line-clamp-2 text-xs text-slate-500">{toPreview(background.prompt)}</div>
+                                  <div className="truncate text-xs font-medium text-slate-800">{background.title}</div>
+                                  <div className="truncate text-[11px] text-slate-400" title={background.prompt}>{toPreview(background.prompt, 60)}</div>
                                 </div>
-                                <Button variant="outline" className="shrink-0 text-xs" onClick={() => setPerTopicBackgroundPrompt(background.prompt)}>
-                                  用这个
+                                <Button variant="outline" className="h-7 shrink-0 rounded-lg px-2.5 text-[11px]" onClick={() => setPerTopicBackgroundPrompt(background.prompt)}>
+                                  用
                                 </Button>
                               </div>
                             ))}
@@ -1542,19 +1557,20 @@ export default function PublishWarehousePage() {
 
                     {activeTier.perIssueFields.includes("portraitExpression") && (
                       <div>
-                        <label className="text-xs font-semibold text-slate-600">这一期的人像表情 / 动作</label>
+                        <label className="text-xs font-semibold text-slate-600">人像表情 / 动作</label>
                         <input
                           value={perTopicExpression}
                           onChange={event => setPerTopicExpression(event.target.value)}
                           placeholder="例如 惊讶并竖起一根手指"
-                          className="mt-1.5 w-full rounded-xl border border-slate-300 px-3 py-2.5 text-sm"
+                          className={`mt-1.5 ${INPUT}`}
                         />
                       </div>
                     )}
 
                     <Button
-                      className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                      className={BTN_PRIMARY_LG}
                       disabled={!coverReadiness.ok || Boolean(coverImageLoading) || !perTopicTitle.trim()}
+                      title={activeTier.id === "standard" ? "复用模板只叠标题，不调用出图模型" : "确认提示词后才出图（唯一花钱的一步）"}
                       onClick={() => {
                         if (activeTier.id === "standard") {
                           makeStandardCover(perTopicTitle);
@@ -1569,28 +1585,23 @@ export default function PublishWarehousePage() {
                       }}
                     >
                       {activeTier.id === "standard"
-                        ? "生成封面（模板 + 标题，不调用出图）"
-                        : (coverImageLoading ? "出图中…（较慢）" : "确认提示词并生成封面")}
+                        ? (coverImageLoading ? "生成中…" : "生成封面")
+                        : (coverImageLoading ? "出图中…（较慢）" : "生成封面")}
                     </Button>
-                    {!coverReadiness.ok && (
-                      <p className="text-xs leading-5 text-amber-700">
-                        还缺 {coverReadiness.missing.join("、")} —— 先在上面补齐这一类要用的素材。
-                      </p>
-                    )}
                   </CardContent>
                 </Card>
 
                 {/* 候选与标题叠加 */}
-                <Card className="border-slate-200 bg-white">
-                  <CardHeader className="pb-3">
-                    <CardTitle className="text-base font-semibold text-slate-900">
-                      封面候选与标题叠加（{coverCandidates.length}）
+                <Card className={CARD}>
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm font-semibold text-slate-900">
+                      封面候选 <span className="text-slate-400">{coverCandidates.length}</span>
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-3">
                     {coverCandidates.length === 0 ? (
-                      <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-400">
-                        还没有封面。按这一类补齐素材后生成。
+                      <p className={EMPTY_BOX}>
+                        还没有封面
                       </p>
                     ) : (
                       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
@@ -1620,6 +1631,13 @@ export default function PublishWarehousePage() {
                                     无图片
                                   </div>
                                 )}
+                                {/* 选中态直接盖在图上一个勾 —— 卡片本身也被蓝色描边包住，
+                                    两处呼应就不用再写「已选」两个字。 */}
+                                {isSelected && (
+                                  <span className="absolute right-1.5 top-1.5 flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-white shadow">
+                                    <Check className="h-3 w-3" />
+                                  </span>
+                                )}
                                 {/* 标题叠加：纯 CSS。让模型在图上写字会写成乱码，所以文字一律前端叠。 */}
                                 {label && (
                                   <span
@@ -1636,116 +1654,101 @@ export default function PublishWarehousePage() {
                                   </span>
                                 )}
                               </button>
-                              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-2">
-                                <span className="truncate text-xs text-slate-600">{candidate.title}</span>
-                                <div className="flex shrink-0 items-center gap-1">
-                                  {/* 换类型后旧封面仍保留，标出它当时是哪一类 */}
-                                  {candidateTier && <Badge className="bg-slate-100 text-slate-500 hover:bg-slate-100">{candidateTier.code}类</Badge>}
-                                  {isSelected && <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">已选</Badge>}
-                                </div>
+                              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 py-1.5">
+                                <span className="truncate text-[11px] text-slate-500">{candidate.title}</span>
+                                {/* 换类型后旧封面仍保留，标出它当时是哪一类 */}
+                                {candidateTier && <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{candidateTier.code}类</span>}
                               </div>
                             </div>
                           );
                         })}
                       </div>
                     )}
-                    {selectedCover && (
-                      <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-600">
-                        当前选中：<span className="font-medium text-slate-800">{selectedCover.title}</span>
-                      </div>
-                    )}
                   </CardContent>
                 </Card>
               </div>
-            ) : coverSubTab === "portrait" ? (
-              <Card className="border-slate-200 bg-white">
-                <CardHeader className="pb-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="text-base font-semibold text-slate-900">IP 形象照</CardTitle>
-                    <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">可复用 Agent</Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {portraitBlock}
-                  {baseSaveRow}
-                </CardContent>
-              </Card>
             ) : (
-              <Card className="border-slate-200 bg-white">
-                <CardHeader className="pb-3">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <CardTitle className="text-base font-semibold text-slate-900">个性化背景模板</CardTitle>
-                    <Badge className="bg-blue-50 text-blue-600 hover:bg-blue-50">可复用 Agent</Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {backgroundBlock}
-                  {titleStyleBlock}
-                  {baseSaveRow}
-                </CardContent>
-              </Card>
+              /* 走到这里只有一种情况：封面类型没读到（接口失败）。原来这里还挂着
+                 两个「独立板块」分支，但类型页签改成只切三个类型之后它们已经不可达，
+                 留着就是死代码 —— 换成一句空态。 */
+              <div className={EMPTY_BOX}>
+                封面类型没读到，刷新重试。
+              </div>
             )}
           </div>
         )}
 
         {/* ── 3.2 发布文案 ─────────────────────────────────────────────────── */}
         {activeTab === "copy" && (
-          <Card className="border-slate-200 bg-white">
-            <CardHeader className="pb-3">
+          <Card className={CARD}>
+            <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
-                <CardTitle className="text-base font-semibold text-slate-900">发布文案（四类各勾选）</CardTitle>
+                {/* 原来标题下面还挂一段两行说明（金句 AI 生成 / 标题与 3s 复用已有结果）。
+                    这段是**规则**不是**操作**，挪进 title + 各类的「复用已有 / AI 生成」小标签里，
+                    正文只剩可选的卡片。 */}
+                <CardTitle
+                  className="text-sm font-semibold text-slate-900"
+                  title="金句与互动由 AI 生成；标题与 3s 直接复用内容生成页已确认的结果，不会重跑一遍"
+                >
+                  发布文案
+                </CardTitle>
                 <Button
-                  className="bg-slate-950 text-white hover:bg-slate-800"
+                  className="h-8 rounded-lg bg-slate-950 px-3 text-xs font-semibold text-white hover:bg-slate-800"
                   disabled={copyLoading || !activeTopic}
                   onClick={loadPublishCopy}
                 >
-                  {copyLoading ? "生成中…" : copyItems.length > 0 ? "重新生成" : "生成发布文案"}
+                  {copyLoading ? "生成中…" : copyItems.length > 0 ? "重新生成" : "生成"}
                 </Button>
               </div>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <p className="text-xs leading-5 text-slate-500">
-                金句与互动由 AI 生成；<span className="font-medium text-slate-700">标题与 3s 直接复用你在内容生成页已确认的结果</span>，不会重跑一遍。
-              </p>
+            <CardContent>
               {copyItems.length === 0 ? (
-                <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-400">
-                  还没有发布文案。点右上角生成。
+                <p className={EMPTY_BOX}>
+                  还没有发布文案
                 </p>
-              ) : copyItems.map(item => (
-                <div key={item.kind} className="rounded-xl border border-slate-200 px-4 py-3">
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm font-semibold text-slate-800">{item.label}</span>
-                    <Badge className={item.source === "reuse" ? "bg-slate-100 text-slate-600 hover:bg-slate-100" : "bg-blue-50 text-blue-600 hover:bg-blue-50"}>
-                      {item.source === "reuse" ? "复用已有" : "AI 生成"}
-                    </Badge>
-                    {item.options.length === 0 && <span className="text-xs text-amber-600">这一类没有生成出内容</span>}
-                  </div>
-                  <div className="mt-2 space-y-1.5">
-                    {item.options.map(option => {
-                      const checked = copySelected.includes(option);
-                      return (
-                        <button
-                          key={option}
-                          type="button"
-                          onClick={() => {
-                            const nextSelected = toggle(copySelected, option);
-                            persist(activeTopicId, {
-                              cover: activeSelection?.cover || null,
-                              publishCopy: { items: copyItems, selected: nextSelected },
-                              topicTags: activeSelection?.topicTags || null,
-                            });
-                          }}
-                          className={`block w-full rounded-lg border px-3 py-2 text-left text-sm transition ${
-                            checked ? "border-blue-400 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
-                          }`}
-                        >
-                          {option}
-                        </button>
-                      );
-                    })}
-                  </div>
+              ) : (
+                <div className="grid gap-2.5 lg:grid-cols-2">
+                  {copyItems.map(item => (
+                    <div key={item.kind} className="rounded-xl border border-slate-200 px-3 py-2.5">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-semibold text-slate-800">{item.label}</span>
+                        <span className={`rounded px-1.5 py-0.5 text-[11px] ${item.source === "reuse" ? "bg-slate-100 text-slate-500" : "bg-blue-50 text-blue-600"}`}>
+                          {item.source === "reuse" ? "复用" : "AI"}
+                        </span>
+                        {item.options.length === 0 && <span className="text-[11px] text-amber-600">无内容</span>}
+                      </div>
+                      <div className="mt-1.5 space-y-1.5">
+                        {item.options.map(option => {
+                          const checked = copySelected.includes(option);
+                          return (
+                            <button
+                              key={option}
+                              type="button"
+                              onClick={() => {
+                                const nextSelected = toggle(copySelected, option);
+                                persist(activeTopicId, {
+                                  cover: activeSelection?.cover || null,
+                                  publishCopy: { items: copyItems, selected: nextSelected },
+                                  topicTags: activeSelection?.topicTags || null,
+                                });
+                              }}
+                              className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
+                                checked ? "border-blue-400 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                              }`}
+                            >
+                              {/* 勾只在选中时出现：没勾 = 没选，不用再读文字 */}
+                              <span className={`mt-0.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border ${checked ? "border-blue-500 bg-blue-500 text-white" : "border-slate-300"}`}>
+                                {checked && <Check className="h-2.5 w-2.5" />}
+                              </span>
+                              <span className="min-w-0 flex-1">{option}</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              )}
             </CardContent>
           </Card>
         )}
@@ -1754,20 +1757,23 @@ export default function PublishWarehousePage() {
         {/* 这一页是本轮最后一步，所以「核查与导出」也挂在这里 —— 3.1 / 3.2 不再出现它。 */}
         {activeTab === "tags" && (
           <>
-          <div className="grid gap-5 lg:grid-cols-2">
-            <Card className="border-slate-200 bg-white">
-              <CardHeader className="pb-3">
+          <div className="grid gap-3 lg:grid-cols-2">
+            <Card className={CARD}>
+              <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-semibold text-slate-900">账号标签库（恒定）</CardTitle>
-                  <Button variant="outline" disabled={accountTagsLoading} onClick={loadAccountTags}>
-                    {accountTagsLoading ? "生成中…" : accountTags ? "重新生成" : "生成候选"}
+                  {/* 「三个角度各选 1 个、确认后长期复用」是规则，收进 title 悬浮 */}
+                  <CardTitle
+                    className="text-sm font-semibold text-slate-900"
+                    title="三个角度各选 1 个，确认后作为账号恒定标签长期复用，不用每轮重选"
+                  >
+                    账号标签库
+                  </CardTitle>
+                  <Button variant="outline" className="h-8 rounded-lg px-3 text-xs" disabled={accountTagsLoading} onClick={loadAccountTags}>
+                    {accountTagsLoading ? "生成中…" : accountTags ? "重新生成" : "生成"}
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs leading-5 text-slate-500">
-                  三个角度各选 1 个，确认后作为账号恒定标签长期复用（不用每轮重选）。
-                </p>
+              <CardContent className="space-y-2.5">
                 {ACCOUNT_TAG_ANGLES.map(angle => {
                   // 先取出来再用：写成 `x || [].map(...)` 会让 `.map` 绑到 `[]` 上，
                   // 而且三元与 `||` 混在一起极易读错。派生值统一放使用它的 JSX 之前。
@@ -1782,60 +1788,60 @@ export default function PublishWarehousePage() {
                             type="button"
                             onClick={() => setAccountConfirmed(prev => ({ ...prev, [angle.key]: candidate }))}
                             className={`rounded-lg border px-3 py-1.5 text-xs transition ${
-                              accountConfirmed[angle.key] === candidate
-                                ? "border-blue-400 bg-blue-50 text-blue-700"
-                                : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                              accountConfirmed[angle.key] === candidate ? CHIP_ON : CHIP_OFF
                             }`}
                           >
                             {candidate}
                           </button>
                         ))}
                         {candidates.length === 0 && (
-                          <span className="text-xs text-slate-400">还没生成候选</span>
+                          <span className="text-[11px] text-slate-400">还没生成候选</span>
                         )}
                       </div>
                     </div>
                   );
                 })}
                 <Button
-                  className="h-10 w-full rounded-xl bg-blue-600 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
+                  className="h-9 w-full rounded-lg bg-blue-600 text-xs font-semibold text-white hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-blue-600/40 disabled:opacity-70"
                   onClick={confirmAccountTags}
                   disabled={!accountTags}
                 >
-                  确认并保存账号标签
+                  确认账号标签
                 </Button>
-                {confirmedAccountTagList.length > 0 && (
-                  <div className="rounded-xl bg-slate-50 px-4 py-3 text-xs text-slate-600">
-                    当前账号标签：{confirmedAccountTagList.join(" / ")}
-                  </div>
-                )}
               </CardContent>
             </Card>
 
-            <Card className="border-slate-200 bg-white">
-              <CardHeader className="pb-3">
+            <Card className={CARD}>
+              <CardHeader className="pb-2">
                 <div className="flex items-center justify-between">
-                  <CardTitle className="text-base font-semibold text-slate-900">选题标签</CardTitle>
-                  <Button variant="outline" disabled={topicTagsLoading} onClick={loadTopicTags}>
-                    {topicTagsLoading ? "生成中…" : tagGroups.length > 0 ? "重新生成" : "生成标签"}
+                  {/* 「配比：小类 x2 + 脚本核心内容 x2 + 目标用户 x1」收进 title，
+                      界面上每组后面的 已选/配额 小字已经把配比表达出来了。 */}
+                  <CardTitle
+                    className="text-sm font-semibold text-slate-900"
+                    title="配比：小类 x2 ＋ 脚本核心内容 x2 ＋ 目标用户 x1"
+                  >
+                    选题标签
+                  </CardTitle>
+                  <Button variant="outline" className="h-8 rounded-lg px-3 text-xs" disabled={topicTagsLoading} onClick={loadTopicTags}>
+                    {topicTagsLoading ? "生成中…" : tagGroups.length > 0 ? "重新生成" : "生成"}
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <p className="text-xs leading-5 text-slate-500">
-                  配比：小类 x2 ＋ 脚本核心内容 x2 ＋ 目标用户 x1。
-                </p>
+              <CardContent className="space-y-2.5">
                 {tagGroups.length === 0 ? (
-                  <p className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-400">
-                    还没有标签。点右上角生成。
+                  <p className={EMPTY_BOX}>
+                    还没有标签
                   </p>
                 ) : tagGroups.map(group => (
                   <div key={group.key}>
-                    <div className="text-xs font-semibold text-slate-600">
-                      {group.label}
-                      <span className="ml-1 text-slate-400">{group.tags.length}/{group.quota}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-slate-600">{group.label}</span>
+                      {/* 已选 / 配额：数字变蓝 = 凑够了，灰色 = 还差 */}
+                      <span className={`text-[11px] ${tagSelected.filter(tag => group.tags.includes(tag)).length >= group.quota ? "text-blue-600" : "text-slate-400"}`}>
+                        {tagSelected.filter(tag => group.tags.includes(tag)).length}/{group.quota}
+                      </span>
                     </div>
-                    <div className="mt-1.5 flex flex-wrap gap-2">
+                    <div className="mt-1.5 flex flex-wrap gap-1.5">
                       {group.tags.map(tag => {
                         const checked = tagSelected.includes(tag);
                         return (
@@ -1847,8 +1853,8 @@ export default function PublishWarehousePage() {
                               publishCopy: activeSelection?.publishCopy || null,
                               topicTags: { groups: tagGroups, selected: toggle(tagSelected, tag), missing: activeSelection?.topicTags?.missing || [] },
                             })}
-                            className={`rounded-lg border px-3 py-1.5 text-xs transition ${
-                              checked ? "border-blue-400 bg-blue-50 text-blue-700" : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                            className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
+                              checked ? CHIP_ON : CHIP_OFF
                             }`}
                           >
                             {tag}
@@ -1859,90 +1865,93 @@ export default function PublishWarehousePage() {
                   </div>
                 ))}
                 {(activeSelection?.topicTags?.missing || []).length > 0 && (
-                  <div className="rounded-xl bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
-                    有类别没凑够：
-                    {(activeSelection?.topicTags?.missing || []).join("、")}
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {(activeSelection?.topicTags?.missing || []).map(name => (
+                      <span key={name} className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">缺 {name}</span>
+                    ))}
                   </div>
                 )}
               </CardContent>
             </Card>
             </div>
           {/* ── 核查 + 导出 ───────────────────────────────────────────────────────── */}
-          <Card className="mt-5 border-slate-200 bg-white">
-            <CardHeader className="pb-3">
-              <CardTitle className="text-base font-semibold text-slate-900">核查与导出</CardTitle>
+          <Card className={`${CARD} mt-3`}>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-sm font-semibold text-slate-900">核查与导出</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="grid gap-3 sm:grid-cols-3">
-                <div className="rounded-xl bg-slate-50 px-4 py-3">
-                  <div className="text-lg font-semibold text-slate-900">{coverCandidates.length}</div>
-                  <div className="mt-1 text-xs text-slate-500">封面候选（已选 {selectedCoverId ? 1 : 0}）</div>
+            <CardContent className="space-y-3">
+              <div className="grid gap-2.5 sm:grid-cols-3">
+                <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                  <div className="text-xl font-semibold leading-none text-slate-900">{coverCandidates.length}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">封面候选{selectedCoverId ? " · 已选 1" : ""}</div>
                 </div>
-                <div className="rounded-xl bg-slate-50 px-4 py-3">
-                  <div className="text-lg font-semibold text-slate-900">{copySelected.length}</div>
-                  <div className="mt-1 text-xs text-slate-500">已选发布文案</div>
+                <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                  <div className="text-xl font-semibold leading-none text-slate-900">{copySelected.length}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">已选文案</div>
                 </div>
-                <div className="rounded-xl bg-slate-50 px-4 py-3">
-                  <div className="text-lg font-semibold text-slate-900">{tagSelected.length + confirmedAccountTagList.length}</div>
-                  <div className="mt-1 text-xs text-slate-500">已选标签（含账号标签）</div>
+                <div className="rounded-xl bg-slate-50 px-3 py-2.5">
+                  <div className="text-xl font-semibold leading-none text-slate-900">{tagSelected.length + confirmedAccountTagList.length}</div>
+                  <div className="mt-1 text-[11px] text-slate-500">已选标签</div>
                 </div>
               </div>
-  
+
               <div className="flex flex-wrap gap-2">
-                <Button className="bg-blue-600 text-white hover:bg-blue-700" onClick={goToFinalEditor}>
+                <Button className="h-9 rounded-lg bg-blue-600 px-3 text-xs font-semibold text-white hover:bg-blue-700" onClick={goToFinalEditor}>
                   进入最终文案编辑页
                 </Button>
-                <Button variant="outline" disabled={exporting === "feishu"} onClick={() => exportAll("feishu")}>
+                <Button variant="outline" className="h-9 rounded-lg px-3 text-xs" disabled={exporting === "feishu"} onClick={() => exportAll("feishu")}>
                   {exporting === "feishu" ? "写入中…" : "写入飞书文档"}
                 </Button>
-                <Button variant="outline" disabled={exporting === "bitable"} onClick={() => exportAll("bitable")}>
+                <Button variant="outline" className="h-9 rounded-lg px-3 text-xs" disabled={exporting === "bitable"} onClick={() => exportAll("bitable")}>
                   {exporting === "bitable" ? "写入中…" : "写入多维表格"}
                 </Button>
+                {/* 导出读的是「已保存的最终文案」，没保存过会报「暂无可导出」。
+                    这是唯一必须说清的前提，压成一行 + title 展开全文。 */}
+                <span
+                  className="self-center text-[11px] text-slate-400"
+                  title="导出读的是已保存的最终文案（在最终文案编辑页点「保存最终文案」时产生）。还没保存过的话，先进入最终文案编辑页保存一条再回来导出 —— 封面、发布文案与发布标签会一并带进导出结果。"
+                >
+                  导出需先保存最终文案
+                </span>
               </div>
-  
-              {/* 这两个按钮写的是「已保存的最终文案」，而草稿是在最终文案编辑页保存出来的。
-                  不写清前提的话，第一次走流程的人会在这里点出一个「暂无可导出」的错误。 */}
-              <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-xs leading-5 text-slate-500">
-                导出读的是<span className="font-medium text-slate-700">已保存的最终文案</span>
-                （在最终文案编辑页点「保存最终文案」时产生）。还没保存过的话，先点左边的
-                「进入最终文案编辑页」保存一条，再回来导出 —— 封面、发布文案与发布标签会一并带进导出结果。
-              </div>
-  
-              <div className="rounded-xl border border-slate-200 px-4 py-3">
-                <div className="text-xs font-semibold text-slate-600">飞书多维表格</div>
+
+              <div className="rounded-xl border border-slate-200 px-3 py-2.5">
+                <div className="text-xs font-semibold text-slate-700">飞书多维表格</div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <input
                     value={bitableNewName}
                     onChange={event => setBitableNewName(event.target.value)}
                     placeholder="表格名称（可选）"
-                    className="min-w-[220px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                    className={`min-w-[180px] flex-1 ${INPUT_SM}`}
                   />
-                  <Button variant="outline" disabled={exporting === "create"} onClick={createBitable}>
-                    {exporting === "create" ? "创建中…" : "创建新多维表格"}
+                  <Button variant="outline" className="h-8 rounded-lg px-3 text-xs" disabled={exporting === "create"} onClick={createBitable}>
+                    {exporting === "create" ? "创建中…" : "新建表格"}
                   </Button>
                 </div>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <input
                     value={bitableUrl}
                     onChange={event => setBitableUrl(event.target.value)}
-                    placeholder="或粘贴已有表格 URL（https://xxx.feishu.cn/base/<token>）"
-                    className="min-w-[260px] flex-1 rounded-lg border border-slate-300 px-3 py-2 text-xs"
+                    placeholder="粘贴已有表格 URL"
+                    className={`min-w-[200px] flex-1 ${INPUT_SM}`}
                   />
-                  <Badge className="bg-slate-100 text-slate-600 hover:bg-slate-100">
+                  {/* 绑定状态用点的颜色说话 */}
+                  <span className={`inline-flex items-center gap-1 text-[11px] ${bitableUrl ? "text-emerald-600" : "text-slate-400"}`}>
+                    <span className={`h-1.5 w-1.5 rounded-full ${bitableUrl ? "bg-emerald-500" : "bg-slate-300"}`} />
                     {bitableUrl ? "已绑定" : "未绑定"}
-                  </Badge>
+                  </span>
                 </div>
               </div>
-  
+
               <Button
-                className="h-11 w-full rounded-xl bg-emerald-600 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-600/40 disabled:opacity-70"
+                className="h-10 w-full rounded-xl bg-emerald-600 text-sm font-semibold text-white shadow-sm hover:bg-emerald-700 disabled:cursor-not-allowed disabled:bg-emerald-600/40 disabled:opacity-70"
                 onClick={confirmComplete}
               >
-                确认无误（结束本次任务）
+                确认无误，结束本次任务
               </Button>
               {taskCompleteVisible && (
-                <div className="rounded-xl bg-emerald-50 px-4 py-3 text-xs text-emerald-700">
-                  本次任务已完成，正在返回工作台…
+                <div className="rounded-xl bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                  已完成，正在返回工作台…
                 </div>
               )}
             </CardContent>

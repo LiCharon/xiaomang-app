@@ -161,6 +161,70 @@ const formatMetTime = (value: string) => {
  * ⚠️ 定义在**组件外面**：写在页面组件里的话每次渲染都是新组件类型，
  *    React 会卸载重建整棵子树 —— 输入框会失焦、拖拽状态会丢（经典坑）。
  */
+/**
+ * 把上传的图**压到带得动的大小**再进后端。
+ *
+ * 🔴 为什么必须在浏览器里做：图片是以 base64 dataUrl 传的，一张手机拍的图 base64 后
+ *    轻松超过 1MB（Express 全局 body 上限），而线上 Vercel 的请求体硬上限只有 4.5MB ——
+ *    不压就是 413（`entity.too.large`，2026-09-24 实测日志）。
+ *    压到长边 1440、JPEG q0.86 之后一张约 200~400KB，两个平台都过得去；
+ *    封面设计稿按 1080 宽算，1440 留了余量。
+ *
+ * PNG 保留 PNG（可能有透明通道，转 JPEG 会把透明处压成黑边）；
+ * 保留 PNG 仍太大（截图类）时再退回 JPEG —— 宁可丢透明，也不能传不上去。
+ */
+const downscaleDataUrl = async (dataUrl: string, maxEdge = 1440, quality = 0.86): Promise<string> => {
+  const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const element = new Image();
+    element.onload = () => resolve(element);
+    element.onerror = () => reject(new Error("图片读取失败"));
+    element.src = dataUrl;
+  });
+
+  const width = image.naturalWidth || 0;
+  const height = image.naturalHeight || 0;
+  if (!width || !height) return dataUrl;
+
+  // 本来就不大就别动它 —— 反复重编码只会掉画质。
+  const longEdge = Math.max(width, height);
+  const isPng = dataUrl.startsWith("data:image/png");
+  if (longEdge <= maxEdge && dataUrl.length <= 900_000) return dataUrl;
+
+  const scale = Math.min(1, maxEdge / longEdge);
+  const targetWidth = Math.max(1, Math.round(width * scale));
+  const targetHeight = Math.max(1, Math.round(height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = targetWidth;
+  canvas.height = targetHeight;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return dataUrl;
+  // PNG 要透明底、不铺白；JPEG 铺白，否则透明处会变黑。
+  if (!isPng) {
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, targetWidth, targetHeight);
+  }
+  ctx.drawImage(image, 0, 0, targetWidth, targetHeight);
+
+  const asPng = canvas.toDataURL("image/png");
+  if (isPng && asPng.length <= 2_500_000) return asPng;
+  const asJpeg = canvas.toDataURL("image/jpeg", quality);
+  // 两个都比原始串更大的话就别折腾了。
+  return asJpeg.length < dataUrl.length ? asJpeg : dataUrl;
+};
+
+/** 读文件 → 压图 → 返回可传的 dataUrl。 */
+const readImageFile = async (file: File | null): Promise<string> => {
+  if (!file) throw new Error("没有选择文件");
+  if (!file.type.startsWith("image/")) throw new Error("只能上传图片");
+  const raw = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(new Error("图片读取失败"));
+    reader.readAsDataURL(file);
+  });
+  return downscaleDataUrl(raw);
+};
+
 function UploadDropzone({ label, hint, image, onPick }: {
   label: string;
   hint: string;
@@ -427,17 +491,18 @@ export default function PublishWarehousePage() {
     return { ok: missing.length === 0, missing };
   }, [activeTier, baseBackgroundTemplate, baseSourceImage, basePortraitImage]);
 
-  /** 基底里的图上传（对标封面 / 背景模板 / IP 人像共用一套读取逻辑）。 */
-  const handleBaseImageUpload = (file: File | null, apply: (image: { url: string; dataUrl: string }) => void) => {
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setError("只能上传图片");
-      return;
+  /**
+   * 基底里的图上传（对标封面 / 背景模板 / IP 人像共用一套读取逻辑）。
+   *
+   * ⚠️ 读完之后**必须先压图**（downscaleDataUrl）——不压就 413，见那个函数的注释。
+   */
+  const handleBaseImageUpload = async (file: File | null, apply: (image: { url: string; dataUrl: string }) => void) => {
+    try {
+      const dataUrl = await readImageFile(file);
+      apply({ url: "", dataUrl });
+    } catch (error) {
+      setError(error instanceof Error ? error.message : "图片读取失败");
     }
-    const reader = new FileReader();
-    reader.onload = () => apply({ url: "", dataUrl: String(reader.result || "") });
-    reader.onerror = () => setError("图片读取失败");
-    reader.readAsDataURL(file);
   };
 
   /**

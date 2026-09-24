@@ -1577,6 +1577,25 @@ try {
   });
   check(delBase.status === 200, `  清空封面基底 → 200（实际 ${delBase.status}）`);
 
+  // ★ 带图的保存不能被 1MB 的 body 上限挡掉（2026-09-24 线上日志见到 413 entity.too.large）。
+  //   封面模板是以 base64 dataUrl 传上来的，一张手机拍的图轻松超过 1MB ——
+  //   所以 /api/publish-warehouse 与 /api/agent/publish 单独放宽了上限。
+  //   这里真发一个 ~1.6MB 的 body：全局 1mb 的话必定 413。
+  const bigImage = `data:image/png;base64,${"B".repeat(1_600_000)}`;
+  const bigBase = await empPost("/api/publish-warehouse?resource=cover-base", {
+    customerId: SMOKE_CUSTOMER_ID,
+    tier: "standard",
+    sourceImage: { dataUrl: bigImage },
+  }, employeeA);
+  check(bigBase.status !== 413,
+    `★★ 1.6MB 的带图请求不被 413 挡掉（实际 ${bigBase.status}）`,
+    JSON.stringify(bigBase.json).slice(0, 200));
+  check(bigBase.status === 200,
+    `  且能正常保存（实际 ${bigBase.status}）`);
+  await fetch(`${BASE}/api/publish-warehouse?resource=cover-base&customerId=${SMOKE_CUSTOMER_ID}`, {
+    method: "DELETE", headers: { Cookie: employeeA.cookie },
+  });
+
   // ⑧ 清理：删任务 → 删员工 → 删客户（顺带验证删除链是通的）
   for (const id of [mgTaskId, ...(mgTaskBatch.json || []).map(item => String(item._id))]) {
     if (id) await mgmt(`/tasks/${id}`, { method: "DELETE" });

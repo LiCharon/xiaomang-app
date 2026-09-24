@@ -119,6 +119,21 @@ createRequestLogger("server", "startup").info("server.config", {
   doubaoVideoConfigured: Boolean(startupAgentConfig.doubaoVideoEndpoint && startupAgentConfig.doubaoVideoApiKey),
 });
 
+// 🔴 带图的接口需要更大的 body 上限。
+//
+// 封面模板 / 对标封面 / 客户参考照片都是前端读成 base64 dataUrl 再 POST 上来的，
+// 一张手机拍的图 base64 之后轻松超过 1MB —— 全局 `1mb` 会直接 413
+// （`entity.too.large`），而用户只看到「保存失败」（2026-09-24 实测日志）。
+//
+// 只给这两个路由放宽，**不要**把全局上限一起抬高（其它路由不需要扛大 body）。
+// body-parser 解析成功后会置 `req._body`，所以下面那句全局解析器会自动跳过它们。
+// ⚠️ Vercel 侧请求体有 4.5MB 的硬上限，抬这里救不了线上 ——
+//    真正让两边都过得去的是**前端上传前先压图**（见 PublishWarehousePage 的 downscaleDataUrl）。
+const IMAGE_JSON_LIMIT = "24mb";
+const jsonWithImages = express.json({ limit: IMAGE_JSON_LIMIT });
+app.use("/api/publish-warehouse", jsonWithImages);
+app.use("/api/agent/publish", jsonWithImages);
+
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (_req, res) => {
@@ -2268,12 +2283,17 @@ app.use((err, req, res, next) => {
   const message = err instanceof Error ? err.message : String(err || "服务器内部错误");
   // body 解析失败（如体积超限）也要说清是哪一类，否则只看到一个 500。
   const code = err?.type || err?.code || undefined;
+  // 体积超限要给**能照做**的提示：body-parser 的原文是「request entity too large」，
+  // 用户看不出该动哪里（2026-09-24 实测就是这条）。
+  const userMessage = err?.type === "entity.too.large"
+    ? "上传内容太大：封面图片请压缩到 4MB 以内再试（建议长边不超过 1440px）。"
+    : message;
   try {
     createRequestLogger("server.unhandled", req.headers?.["x-request-id"])
       .error("route.unhandled_error", { method: req.method, url: req.originalUrl, status, code, error: message });
   } catch { /* 记日志失败不能影响响应 */ }
   if (res.headersSent) return next(err);
-  return res.status(status).json({ success: false, error: message, code });
+  return res.status(status).json({ success: false, error: userMessage, code });
 });
 
 await ensureManagerIndexes();

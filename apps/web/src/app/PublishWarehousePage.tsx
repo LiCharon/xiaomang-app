@@ -21,6 +21,7 @@ import {
   requestPortraitPlan,
   requestPublishCopy,
   requestTopicTags,
+  refineCoverImage,
   refineCoverStyle,
   saveAccountTags,
   saveCoverBase,
@@ -327,6 +328,12 @@ export default function PublishWarehousePage() {
   const [basePortraitPrompt, setBasePortraitPrompt] = useState("");
   const [basePortraitBasis, setBasePortraitBasis] = useState("");
   const [basePortraitImage, setBasePortraitImage] = useState<{ url: string; dataUrl: string } | null>(null);
+  // 对话式改图：按**候选 id** 存对话记录，改完续在那一版上继续改。
+  // loading 存正在改的候选 id → 改图期间禁用按钮（一次要几十秒，实测约 50s）。
+  const [coverChats, setCoverChats] = useState<Record<string, Array<{ role: "user" | "model"; text: string }>>>({});
+  const [coverChatInput, setCoverChatInput] = useState("");
+  const [coverChatLoading, setCoverChatLoading] = useState("");
+
   // 逐条的标题字号（后端算）——按「这条选题的标题」取。
   const [titleMetrics, setTitleMetrics] = useState<TitleMetric[]>([]);
   // 层二（每条出封面）的输入：这一期要用的标题 / 背景提示词 / 人像表情。
@@ -1382,6 +1389,77 @@ export default function PublishWarehousePage() {
   );
 
   /**
+   * 对话式改图：把「当前选中的这张封面」交给模型重新出图，只改用户提到的那部分。
+   *
+   * 关键取舍：改完的结果**作为新的一版候选追加**，原来那版保留。
+   * 出图是不可逆的（每次约 50s、每次都花钱），覆盖掉上一版等于让用户没法回退比较。
+   * 对话记录挂在新候选 id 上，所以继续改就是在最新那一版上接着改。
+   */
+  const runCoverRefine = async () => {
+    const instruction = coverChatInput.trim();
+    if (!instruction) return;
+    const candidate = selectedCover;
+    if (!candidate) {
+      setError("先在候选里选中一张，再告诉我要改什么");
+      return;
+    }
+    const sourceId = candidate.id;
+    const sourceHistory = (coverChats[sourceId] || []).filter(item => item.role === "user").map(item => item.text);
+    setCoverChatLoading(sourceId);
+    setError("");
+    setCoverChatInput("");
+    setCoverChats(prev => ({ ...prev, [sourceId]: [...(prev[sourceId] || []), { role: "user", text: instruction }] }));
+
+    const appendReply = (id: string, text: string) => {
+      setCoverChats(prev => ({ ...prev, [id]: [...(prev[id] || []), { role: "model", text }] }));
+    };
+
+    try {
+      const result = await refineCoverImage({
+        image: { url: candidate.image?.url || "", dataUrl: candidate.image?.dataUrl || "" },
+        instruction,
+        history: sourceHistory,
+        title: candidate.title,
+        titleStyle: coverTitleStyle,
+      });
+      const image = result.images?.[0];
+      if (!image) throw new Error("改图接口没有返回图片");
+      const existing = activeSelection?.cover?.candidates || [];
+      const nextId = `cover-${existing.length + 1}`;
+      const nextCandidates = [
+        ...existing,
+        {
+          id: nextId,
+          title: `${candidate.title} · 改${existing.length}`,
+          keywords: [],
+          prompt: instruction,
+          image: { url: image.url || "", dataUrl: image.dataUrl || "" },
+          // 类型跟着原候选走 —— 它决定候选上标「几类」，也决定还会不会被前端叠字。
+          tier: candidate.tier,
+        },
+      ];
+      await persist(activeTopicId, {
+        cover: { selectedId: nextId, candidates: nextCandidates, titleStyle: coverTitleStyle || null },
+        publishCopy: activeSelection?.publishCopy || null,
+        topicTags: activeSelection?.topicTags || null,
+      });
+      // 记录搬到新版本上，继续改就是接着这一版改。
+      setCoverChats(prev => ({
+        ...prev,
+        [nextId]: [
+          ...(prev[sourceId] || []),
+          { role: "model", text: `已按「${instruction}」重新出图，作为新的一版（上一版仍保留在候选里）` },
+        ],
+      }));
+      setMessage("改图完成，已作为新的一版候选");
+    } catch (requestError) {
+      appendReply(sourceId, `没改成：${requestError instanceof Error ? requestError.message : "请求失败"}`);
+    } finally {
+      setCoverChatLoading("");
+    }
+  };
+
+  /**
    * 把「底图 + 标题」合成成一张真正的 PNG 下载下来。
    *
    * 为什么不只给预览：预览是 DOM 叠字，用户拿不到文件；而这个模块的交付物就是**一张封面图**。
@@ -1879,6 +1957,56 @@ export default function PublishWarehousePage() {
                             </div>
                           );
                         })}
+                      </div>
+                    )}
+
+                    {/* ── 对话改图 ────────────────────────────────────────────
+                        以选中的那张为参考图重新出图，只改用户提到的那部分。
+                        每次都会真的重新出图（实测约 50s、每次花钱），所以按钮有 in-flight 守卫，
+                        且改完是**追加新的一版候选**、不覆盖上一版 —— 出图不可逆，得能回退比较。 */}
+                    {selectedCover && (
+                      <div className="space-y-2 border-t border-slate-100 pt-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className={LABEL}>对话改图</span>
+                          <span className="rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">
+                            每次都会重新出图 · 约 1 分钟 · 会花钱
+                          </span>
+                          <span className="text-[11px] text-slate-400">每次改动都会存成新的一版，旧版保留</span>
+                        </div>
+                        <div className="text-[11px] text-slate-400">正在改：{selectedCover.title}</div>
+                        {(coverChats[selectedCover.id] || []).length > 0 && (
+                          <div className="space-y-1.5">
+                            {(coverChats[selectedCover.id] || []).map((item, index) => (
+                              <div
+                                key={`${item.role}-${index}`}
+                                className={`rounded-xl px-3 py-2 text-xs leading-5 ${
+                                  item.role === "user" ? "ml-6 bg-blue-50 text-blue-900" : "mr-6 bg-slate-50 text-slate-600"
+                                }`}
+                              >
+                                {item.text}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {coverChatLoading === selectedCover.id && (
+                          <div className="text-[11px] text-slate-400">正在重新出图…（约 1 分钟，别关页面）</div>
+                        )}
+                        <div className="flex flex-wrap gap-2">
+                          <input
+                            value={coverChatInput}
+                            onChange={event => setCoverChatInput(event.target.value)}
+                            onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); runCoverRefine(); } }}
+                            placeholder="用一句话说要改什么，例如「标题再大一点」「人物往右移」"
+                            className={`min-w-[240px] flex-1 ${INPUT}`}
+                          />
+                          <Button
+                            className={BTN_PRIMARY}
+                            disabled={Boolean(coverChatLoading) || !coverChatInput.trim()}
+                            onClick={runCoverRefine}
+                          >
+                            {coverChatLoading === selectedCover.id ? "改图中…" : "改图"}
+                          </Button>
+                        </div>
                       </div>
                     )}
                   </CardContent>

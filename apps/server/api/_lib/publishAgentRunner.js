@@ -14,6 +14,7 @@
 
 import { getContentAgentConfig } from "./contentAgent/config.js";
 import {
+  buildCoverRefinePrompt,
   buildCoverStyleRefineInput,
   buildPublishCopyInput,
   buildPublishCoverInput,
@@ -193,7 +194,7 @@ const summarizeAccountContext = context => {
  * 声明在使用之后会撞 TDZ（`ReferenceError`），而且**只在「phase 传错」这条路径上炸**
  * —— 正常路径全绿，一传错就 500 而不是可读的 400。HANDOFF §0.0-F2 记过同类坑。
  */
-export const PUBLISH_PHASES = ["cover-plan", "cover-base-analysis", "cover-portrait-plan", "cover-style-refine", "cover-title-metrics", "cover-image", "publish-copy", "account-tags", "topic-tags"];
+export const PUBLISH_PHASES = ["cover-plan", "cover-base-analysis", "cover-portrait-plan", "cover-style-refine", "cover-title-metrics", "cover-image", "cover-refine-image", "publish-copy", "account-tags", "topic-tags"];
 
 /**
  * 执行一个 phase。
@@ -289,6 +290,42 @@ export const runPublishPhase = async ({ phase, body = {}, user, logger, config =
       phase: target,
       items: titles.map(title => ({ title, ...computeTitleFontSize({ title, titleStyle }) })),
     };
+  }
+
+  if (target === "cover-refine-image") {
+    // 对话式改图：以**当前这张封面**为参考图重新出图，只改用户提到的部分。
+    // 与 cover-image 的区别只有两点：提示词不同、必须带上一张图（它是迭代，不是从零出图）。
+    // 单独一个 phase 是为了让规则只有一份，调用方不用自己拼。
+    const instruction = cleanText(body?.instruction, 600);
+    if (!instruction) throw badRequest("请说明要改什么");
+    const image = body?.image && typeof body.image === "object" ? body.image : {};
+    const currentImage = {
+      url: asText(image.url).slice(0, 4_000_000),
+      dataUrl: asText(image.dataUrl).slice(0, 4_000_000),
+    };
+    if (!currentImage.url && !currentImage.dataUrl) {
+      throw badRequest("缺少要修改的封面图（改图必须基于上一版）");
+    }
+    if (!isImageGenerationConfigured()) {
+      throw Object.assign(
+        new Error("服务器未配置出图密钥（XXCAPI_API_KEY），暂时无法改图"),
+        { status: 501, code: "IMAGE_NOT_CONFIGURED" },
+      );
+    }
+    const prompt = buildCoverRefinePrompt({
+      instruction,
+      history: Array.isArray(body?.history) ? body.history : [],
+      title: cleanText(body?.title, 300),
+      titleStyle: body?.titleStyle && typeof body.titleStyle === "object" ? body.titleStyle : null,
+    });
+    const result = await editImage(prompt, [currentImage], {
+      config: undefined,
+      size: body?.size,
+      quality: body?.quality,
+      aspectRatio: body?.aspectRatio || "3:4",
+      logger,
+    });
+    return { phase: target, images: result.images, model: result.model, elapsedMs: result.elapsedMs };
   }
 
   if (target === "cover-image") {

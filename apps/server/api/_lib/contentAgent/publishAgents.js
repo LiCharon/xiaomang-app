@@ -16,7 +16,7 @@
  */
 
 import { getContentAgentConfig } from "./config.js";
-import { BENCHMARK_COVER_ANALYSIS_PROMPT, COVER_STYLE_REFINE_PROMPT, PUBLISH_COPY_PROMPT, PUBLISH_COVER_PROMPT, PUBLISH_TAGS_PROMPT } from "./prompts.js";
+import { BENCHMARK_COVER_ANALYSIS_PROMPT, COVER_IMAGE_REFINE_PROMPT, COVER_STYLE_REFINE_PROMPT, PUBLISH_COPY_PROMPT, PUBLISH_COVER_PROMPT, PUBLISH_TAGS_PROMPT } from "./prompts.js";
 import { runJsonAgent, understandDoubaoImage } from "./providers.js";
 import { parseJsonAgentOutput } from "./adapter.js";
 import {
@@ -157,6 +157,33 @@ export const runCoverStyleRefineAgent = async (input, fallbackStyle = null, conf
     reply: cleanText(value?.reply, 200),
   };
 };
+
+/**
+ * 「对话式改图」的输入组装（封面候选旁边那个话框）。
+ *
+ * 带上**之前的调整记录**：用户常说「再亮一点」「字再大些」这类相对说法，
+ * 没有上文模型不知道是相对哪一版。也带上这一条封面的标题与样式，作为「不要乱改」的锚点。
+ */
+export const buildCoverRefineInput = ({ instruction = "", history = [], title = "", titleStyle = null } = {}) => [
+  section("这张封面的已知信息（只用于理解上下文，不要照抄进图里）", {
+    标题: title || undefined,
+    标题样式: titleStyle || undefined,
+  }, 800),
+  Array.isArray(history) && history.length > 0
+    ? section("之前的调整记录（从早到晚）", history.slice(-6), 1200)
+    : "",
+  section("这次要改什么", instruction, 600),
+].filter(Boolean).join("\n\n");
+
+/**
+ * 把「改图说明 + 输入」拼成出图接口要的单一 prompt。
+ *
+ * ⚠️ 出图接口只收一个 prompt（没有 system 消息），所以规则必须拼进同一段文本 ——
+ *    这一点与 DeepSeek 那几个 Agent 不同，别照搬那边的 { system, user } 写法。
+ */
+export const buildCoverRefinePrompt = payload => (
+  `${COVER_IMAGE_REFINE_PROMPT}\n\n${buildCoverRefineInput(payload)}`
+);
 
 /** 3.1 封面基底第一步：上传一张对标封面图 → 拆解（画风 / 元素 / 排版 / 视觉风格 + 留白 + 标题样式）。 */
 export const runBenchmarkCoverAnalysisAgent = async (imageUrl, config = getContentAgentConfig(), options = {}) => {

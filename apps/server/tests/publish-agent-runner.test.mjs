@@ -7,6 +7,7 @@ import {
   pickAccountPlanFields,
 } from "../api/_lib/publishAgentRunner.js";
 import {
+  buildCoverRefinePrompt,
   buildPublishCopyInput,
   buildPublishCoverInput,
   buildPublishTagsInput,
@@ -32,6 +33,8 @@ test("phase 清单与两套后端路由保持一致（含出图那个花钱的 p
     // 纯计算（不调模型）：按基底标题样式给每个候选标题算字号与行数。
     "cover-title-metrics",
     "cover-image",
+    // 对话式改图：以当前封面为参考图重新出图（迭代，必须带上一版）。
+    "cover-refine-image",
     "publish-copy",
     "account-tags",
     "topic-tags",
@@ -177,4 +180,25 @@ test("账号规划为空/形状不对时不崩，如实回 null", () => {
   assert.equal(pickAccountPlanFields(null), null);
   assert.equal(pickAccountPlanFields(undefined), null);
   assert.equal(pickAccountPlanFields("字符串"), null);
+});
+
+test("★ 对话改图的提示词：规则 + 上文 + 本次要求都要在内（否则模型会推倒重来）", () => {
+  const prompt = buildCoverRefinePrompt({
+    instruction: "标题再大一点",
+    history: ["换成金色标题"],
+    title: "企业用工风险三条红线",
+    titleStyle: { color: "#ffd400", position: "top" },
+  });
+  assert.match(prompt, /只改用户明确提到的那部分/, "必须写明「只改提到的部分」");
+  assert.match(prompt, /不要推倒重来/, "相对说法要基于上一版继续改");
+  assert.match(prompt, /换成金色标题/, "要带上之前的调整记录");
+  assert.match(prompt, /标题再大一点/, "要带上本次要求");
+  assert.match(prompt, /企业用工风险三条红线/, "要带上标题作为「不要乱改」的锚点");
+  assert.match(prompt, /#ffd400/, "要带上标题样式");
+});
+
+test("对话改图：没有上文时不留占位（不写「之前的调整记录」这种空块）", () => {
+  const prompt = buildCoverRefinePrompt({ instruction: "背景换成蓝色" });
+  assert.doesNotMatch(prompt, /之前的调整记录/);
+  assert.match(prompt, /背景换成蓝色/);
 });

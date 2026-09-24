@@ -260,6 +260,24 @@ export const refineCoverStyle = (payload: {
   history?: Array<{ role: string; text: string }>;
 }) => post<{ titleStyle: TitleStyleTemplate; reply: string }>("/api/agent/publish", { phase: "cover-style-refine", ...payload });
 
+/**
+ * 对话式改图：以**当前这张封面**为参考图重新出图，只改用户提到的部分。
+ *
+ * 与 `refineCoverStyle` 的区别：那个只改标题样式参数（纯文本，不重新出图）；
+ * 这个会真的重新出一张图，所以慢（实测单张约 50s）且花钱。
+ * 带上 `history`：用户常说「再亮一点」这类相对说法，没有上文模型不知道相对哪一版。
+ */
+export const refineCoverImage = (payload: {
+  image: { url?: string; dataUrl?: string };
+  instruction: string;
+  history?: string[];
+  title?: string;
+  titleStyle?: Partial<TitleStyleTemplate> | null;
+}) => post<{ images: Array<{ url: string; dataUrl: string }>; model: string; elapsedMs: number }>(
+  "/api/agent/publish",
+  { phase: "cover-refine-image", ...payload },
+);
+
 // ── 持久化 ──────────────────────────────────────────────────────────────────
 
 export const listPublishSelections = async (customerId: string): Promise<PublishSelection[]> => {

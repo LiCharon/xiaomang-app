@@ -1596,6 +1596,34 @@ try {
     method: "DELETE", headers: { Cookie: employeeA.cookie },
   });
 
+  // ★ 对话改图（cover-refine-image）：必须**以上一版封面为输入**，所以少了图要 400；
+  //   出图密钥在起服务时已被清空，所以校验通过后必须回 501（而不是真的去打网关）。
+  const refineNoInstruction = await empPublish("/api/agent/publish", {
+    method: "POST",
+    body: JSON.stringify({ phase: "cover-refine-image", image: { dataUrl: "data:image/png;base64,AAAA" } }),
+  });
+  check(refineNoInstruction.status === 400,
+    `★ 改图缺「要改什么」→ 400（实际 ${refineNoInstruction.status}）`);
+
+  const refineNoImage = await empPublish("/api/agent/publish", {
+    method: "POST",
+    body: JSON.stringify({ phase: "cover-refine-image", instruction: "标题再大一点" }),
+  });
+  check(refineNoImage.status === 400,
+    `★★ 改图缺上一版图 → 400（改图必须基于上一版，不许退化成从零出图，实际 ${refineNoImage.status}）`);
+
+  const refineNoKey = await empPublish("/api/agent/publish", {
+    method: "POST",
+    body: JSON.stringify({
+      phase: "cover-refine-image",
+      instruction: "标题再大一点",
+      image: { dataUrl: "data:image/png;base64,AAAA" },
+      history: ["换成金色标题"],
+    }),
+  });
+  check(refineNoKey.status === 501,
+    `★ 改图缺密钥 → 501（实际 ${refineNoKey.status}；200 意味着真的花钱出图了）`);
+
   // ⑧ 清理：删任务 → 删员工 → 删客户（顺带验证删除链是通的）
   for (const id of [mgTaskId, ...(mgTaskBatch.json || []).map(item => String(item._id))]) {
     if (id) await mgmt(`/tasks/${id}`, { method: "DELETE" });

@@ -611,8 +611,11 @@ export default function PublishWarehousePage() {
         quality: "high",
         aspectRatio: "3:4",
       });
-      const image = result.images?.[0];
-      if (!image) throw new Error("出图接口没有返回图片");
+      const rawImage = result.images?.[0];
+      if (!rawImage) throw new Error("出图接口没有返回图片");
+      // ⚠️ 出图结果同样要压：网关的 2K 图 base64 后约 5MB 字符，不压会撞存储层上限，
+      //    也会让请求体超过 Vercel 的 4.5MB（上传路径早压了，出图路径漏了）。
+      const image = { url: rawImage.url || "", dataUrl: await downscaleDataUrl(rawImage.dataUrl || rawImage.url || "") };
       const ref = { url: image.url || "", dataUrl: image.dataUrl || "" };
       if (kind === "portrait") {
         setBasePortraitImage(ref);
@@ -767,8 +770,11 @@ export default function PublishWarehousePage() {
         quality: "high",
         aspectRatio: "3:4",
       });
-      const image = result.images?.[0];
-      if (!image) throw new Error("出图接口没有返回图片");
+      const rawImage = result.images?.[0];
+      if (!rawImage) throw new Error("出图接口没有返回图片");
+      // ⚠️ 出图结果同样要压：网关的 2K 图 base64 后约 5MB 字符，不压会撞存储层上限，
+      //    也会让请求体超过 Vercel 的 4.5MB（上传路径早压了，出图路径漏了）。
+      const image = { url: rawImage.url || "", dataUrl: await downscaleDataUrl(rawImage.dataUrl || rawImage.url || "") };
       const candidates = [
         ...baseCandidates,
         {
@@ -1422,8 +1428,9 @@ export default function PublishWarehousePage() {
         title: candidate.title,
         titleStyle: coverTitleStyle,
       });
-      const image = result.images?.[0];
-      if (!image) throw new Error("改图接口没有返回图片");
+      const rawImage = result.images?.[0];
+      if (!rawImage) throw new Error("改图接口没有返回图片");
+      const image = { url: rawImage.url || "", dataUrl: await downscaleDataUrl(rawImage.dataUrl || rawImage.url || "") };
       const existing = activeSelection?.cover?.candidates || [];
       const nextId = `cover-${existing.length + 1}`;
       const nextCandidates = [

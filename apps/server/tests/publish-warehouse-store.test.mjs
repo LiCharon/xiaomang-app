@@ -214,21 +214,38 @@ test("发布仓 store", { skip }, async t => {
     assert.equal((await listPublishSelections({ ownerId: OWNER_A, customerId: CUSTOMER })).length, 0);
   });
 
-  await t.test("超大图片引用被截断，不会把几百 MB 写进一个文档", async () => {
-    // ⚠️ 用 ~4MB 的边界量级而不是 5MB 的巨型串：这条测的是**截断逻辑生效**，
-    //    不是「网络能传多大」。写一个远超上限的巨大 base64 到远程 Atlas，实测会把
-    //    这个用例拖到几分钟（字符串化 + 传输 + 远端解析），进而把整个 `npm test` 挂死。
-    const limit = 4_000_000;
-    const huge = `data:image/png;base64,${"A".repeat(limit + 100_000)}`;
+  await t.test("★ 超大的图**整张丢掉、绝不截断**（截断出来的是损坏 base64）", async () => {
+    // 2026-09-24 实测的坑：网关产出的 2K 图 base64 约 5MB 字符，超过当时 4_000_000 的上限，
+    // 被 .slice() 截断成**损坏的 base64**。它预览看着像图，发给网关却报
+    // 「参考图无效（invalid_reference_image）」—— 排查方向完全错。
+    // 所以现在的口径是：装不下就整张丢掉、如实返回空串，让界面显示「无图片」。
+    // ⚠️ 用**刚过上限**的量级而不是几百 MB 的巨型串：这条测的是「超限怎么办」，
+    //    不是「网络能传多大」；写巨大 base64 到远程库会把整个 `npm test` 拖死。
+    const overLimit = `data:image/png;base64,${"A".repeat(8_000_000 + 1_000)}`;
     const saved = await savePublishSelection({
       ownerId: OWNER_A,
       customerId: CUSTOMER,
       topicId: "topic-huge",
-      cover: { candidates: [{ id: "c1", image: { dataUrl: huge } }] },
+      cover: { candidates: [{ id: "c1", image: { dataUrl: overLimit } }] },
     });
-    const stored = saved.cover.candidates[0].image.dataUrl;
-    assert.ok(stored.length <= limit, `必须截断到 ${limit} 以内（实际 ${stored.length}）`);
-    assert.ok(stored.length > 0, "截断后仍要有内容，不能变成空串");
+    const stored = saved.cover.candidates[0].image;
+    assert.equal(stored.dataUrl, "", "超限就该丢掉，不能留下截断的损坏数据");
+    assert.equal(stored.url, "");
+    // 候选本身要保留（不然用户会在列表里莫名其妙少一条），只是没有图。
+    assert.equal(saved.cover.candidates.length, 1, "候选要保留，只是没图");
+  });
+
+  await t.test("★ 网关产出的 2K 图（约 5MB 字符）必须能完整存下（不被截断）", async () => {
+    // 这条钉住上限本身：实测一张 2K PNG 约 2.86MB，base64 后约 5MB 字符 ——
+    // 上限必须能装下它，否则正常出图的结果就会被丢掉。
+    const twoK = `data:image/png;base64,${"A".repeat(5_000_000)}`;
+    const saved = await savePublishSelection({
+      ownerId: OWNER_A,
+      customerId: CUSTOMER,
+      topicId: "topic-2k",
+      cover: { candidates: [{ id: "c1", image: { dataUrl: twoK } }] },
+    });
+    assert.equal(saved.cover.candidates[0].image.dataUrl.length, twoK.length, "2K 图必须原样存下");
   });
 
   await t.test("★ 选题选择里的 titleStyle 必须保住数字字号（回归钉子）", async () => {

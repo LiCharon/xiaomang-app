@@ -40,7 +40,31 @@ const MAX_COVER_CANDIDATES = 12;
 const MAX_COPY_OPTIONS = 12;
 const MAX_TAGS = 20;
 /** 参考图/生成图的 data URL 可能很大 —— 只存 URL 或截断后的 data URL。 */
-const MAX_IMAGE_URL_CHARS = 4_000_000;
+/**
+ * 单张图的 dataUrl 上限（字符数）。
+ *
+ * ⚠️ 这个值必须能装下**出图网关产出的 2K 图**：实测一张 2K PNG 约 2.86MB，
+ *    base64 后约 5MB 字符。原来定 4_000_000 时，生成图会被**截断**成损坏的 base64，
+ *    而损坏的图再拿去当参考图就会被网关拒（`invalid_reference_image`，
+ *    2026-09-24 实测：候选的 dataUrl 字符数正好卡在 4_000_000）。
+ */
+const MAX_IMAGE_URL_CHARS = 8_000_000;
+
+/** 图片字段：只接受 url 或 dataUrl。 */
+const normalizeImageRef = value => {
+  const source = value && typeof value === "object" ? value : {};
+  const url = asText(source.url);
+  const dataUrl = asText(source.dataUrl);
+  // 🔴 **绝不截断**。截断出来的 base64 是损坏数据：预览要么破图，要么更糟 ——
+  //    看起来正常、发给网关却报「参考图无效」，排查方向完全错（这条踩过）。
+  //    真的超限就整张丢掉并如实返回 null，让界面显示「无图片」——
+  //    丢掉是可看见的，损坏是看不见的。前端上传时会先压图，正常不会走到这里。
+  const tooLarge = text => text.length > MAX_IMAGE_URL_CHARS;
+  return {
+    url: tooLarge(url) ? "" : url,
+    dataUrl: tooLarge(dataUrl) ? "" : dataUrl,
+  };
+};
 
 const asText = value => String(value ?? "").trim();
 
@@ -114,14 +138,6 @@ const requireCustomerId = value => {
 };
 
 /** 图片字段：只接受 url 或 dataUrl，且长度封顶（避免把几百 MB 写进一个文档）。 */
-const normalizeImageRef = value => {
-  const source = value && typeof value === "object" ? value : {};
-  const url = asText(source.url).slice(0, MAX_IMAGE_URL_CHARS);
-  const dataUrl = asText(source.dataUrl).slice(0, MAX_IMAGE_URL_CHARS);
-  if (!url && !dataUrl) return null;
-  return { url, dataUrl };
-};
-
 // ── 账号标签库 ──────────────────────────────────────────────────────────────
 
 const serializeAccountTags = document => ({

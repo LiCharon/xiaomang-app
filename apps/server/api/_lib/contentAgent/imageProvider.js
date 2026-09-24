@@ -19,6 +19,7 @@
  */
 
 import { EnvHttpProxyAgent, ProxyAgent } from "undici";
+import { sleep } from "./http.js";
 
 const DEFAULT_BASE_URL = "https://xxcapi.com";
 const DEFAULT_MODEL = "gpt-image-2.5-sunburst";
@@ -63,7 +64,9 @@ const describeNetworkError = error => {
   const code = String(cause?.code || cause?.name || "").toUpperCase();
   const reason = String(cause?.message || error?.message || "").trim();
   const hints = {
-    ENOTFOUND: "域名解析失败（DNS 查不到这个域名，常见于代理/VPN 的 DNS 没有放行，或域名写错）",
+    ENOTFOUND: "域名解析失败（DNS 查不到出图域名 —— 常见于代理/VPN 的 DNS 没放行）。"
+      + "若你的网络需要代理：在 apps/server/.env 配 XXCAPI_PROXY_URL（也认 HTTPS_PROXY）后重启服务；"
+      + "自检用 npm run probe:image --workspace @xiaomang/server",
     EAI_AGAIN: "域名解析暂时失败（DNS 不可达，稍后重试或检查 DNS/代理）",
     ECONNREFUSED: "连接被拒绝（目标没在监听，或代理没开）",
     ECONNRESET: "连接被重置（可能被网络中间层拦截，检查是否需要代理）",
@@ -217,8 +220,28 @@ const buildError = (message, code, details) => {
   return error;
 };
 
-/** 统一的 fetch 包装：超时 + 把非 2xx 的错误文本带回来（网关的报错很有用）。 */
-const postWithTimeout = async (url, init, timeoutMs, dispatcher = null) => {
+/**
+ * 这次失败是不是「请求**根本没到网关**」。
+ *
+ * 只有这类才允许重试：DNS 解析失败（ENOTFOUND / EAI_AGAIN）与连接被拒（ECONNREFUSED）。
+ * 它们不可能是「上游已经受理」—— 所以重试不会重复计费，而代理/VPN 的 DNS 抖动往往
+ * 一两秒后就自己好了（本机实测：同一域名时而能通时而 ENOTFOUND）。
+ *
+ * ⚠️ 超时与 5xx **绝不重试**：上游可能已经在出图了，重试等于重复扣费。
+ *    同理，IMAGE_* 那批我们自己抛的错误也不重试。
+ */
+const isRetryableNetworkError = error => {
+  // 只有「网络层失败」这一种才谈得上重试。其余 IMAGE_*（HTTP 非 2xx、超时、
+  // 未配置密钥…）一律不重试 —— 它们要么已经打到网关，要么根本不该重发。
+  if (error?.code !== "IMAGE_NETWORK_ERROR") return false;
+  const code = String(error?.cause?.code || error?.details?.causeCode || "").toUpperCase();
+  return code === "ENOTFOUND" || code === "EAI_AGAIN" || code === "ECONNREFUSED";
+};
+
+const NETWORK_RETRY_ATTEMPTS = 3;
+
+/** 单次请求：超时 + 把非 2xx 的错误文本带回来（网关的报错很有用）。 */
+const postOnce = async (url, init, timeoutMs, dispatcher = null) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -243,7 +266,8 @@ const postWithTimeout = async (url, init, timeoutMs, dispatcher = null) => {
         // 截断：网关报错里可能回带请求体片段，别让日志被撑爆。
         { status: response.status, body: text.slice(0, 500) },
       );
-    }    try {
+    }
+    try {
       return JSON.parse(text);
     } catch {
       throw buildError("出图接口返回的不是 JSON", "IMAGE_BAD_JSON", { body: text.slice(0, 300) });
@@ -258,14 +282,39 @@ const postWithTimeout = async (url, init, timeoutMs, dispatcher = null) => {
     //    把真正的上游原因盖掉（这条被子测抓过）。
     if (error?.code && String(error.code).startsWith("IMAGE_")) throw error;
     // 网络层失败（DNS / 连接 / 证书）原样抛出去只有「fetch failed」四个字，
-    // 日志里完全看不出原因 —— 翻译成中文再抛。
-    throw buildError(describeNetworkError(error), "IMAGE_NETWORK_ERROR", {
+    // 日志里完全看不出原因 —— 翻译成中文再抛，同时把原始 cause **链上**：
+    // 重试判断（isRetryableNetworkError）与排查都要看它。
+    const wrapped = buildError(describeNetworkError(error), "IMAGE_NETWORK_ERROR", {
       causeCode: error?.cause?.code,
       causeMessage: error?.cause?.message,
     });
+    if (error?.cause) wrapped.cause = error.cause;
+    throw wrapped;
   } finally {
     clearTimeout(timer);
   }
+};
+
+/**
+ * 带重试的 fetch 包装。
+ *
+ * 只在「请求根本没到网关」时重试（DNS 解析失败 / 连接被拒，见 isRetryableNetworkError）——
+ * 本机实测出图域名会时而解析不了时而正常（代理/VPN 的 DNS 抖动），而这类失败重试不花钱。
+ * 超时与 5xx 不重试：上游可能已经在出图，重试等于重复扣费。
+ */
+const postWithTimeout = async (url, init, timeoutMs, dispatcher = null) => {
+  let lastError;
+  for (let attempt = 1; attempt <= NETWORK_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      return await postOnce(url, init, timeoutMs, dispatcher);
+    } catch (error) {
+      lastError = error;
+      if (attempt >= NETWORK_RETRY_ATTEMPTS || !isRetryableNetworkError(error)) throw error;
+      // 退避递增：1.5s / 3s。DNS 抖动通常一两秒后恢复。
+      await sleep(attempt * 1500);
+    }
+  }
+  throw lastError;
 };
 
 /**

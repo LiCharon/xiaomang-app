@@ -317,3 +317,55 @@ test("★ 配了出图代理时，请求必须带上 dispatcher（裸 fetch 在�
     },
   );
 });
+
+test("★ DNS 解析失败要重试（请求没到网关，重试不花钱）", async () => {
+  // 本机实测：出图域名时而解析不了时而正常（代理/VPN 的 DNS 抖动）。
+  // 这类失败**请求根本没发出去**，所以重试不会重复计费，而往往一两秒后就通了。
+  let attempts = 0;
+  await withStubbedFetch(
+    () => {
+      attempts += 1;
+      if (attempts < 3) {
+        const error = new Error("fetch failed");
+        error.cause = Object.assign(new Error("getaddrinfo ENOTFOUND xxcapi.com"), { code: "ENOTFOUND" });
+        throw error;
+      }
+      return jsonResponse({ data: [{ b64_json: PNG_1PX }] });
+    },
+    async () => {
+      const result = await generateImage("一只猫", { config });
+      assert.equal(attempts, 3, "前两次 DNS 失败后应当再试，第三次成功");
+      assert.equal(result.images.length, 1);
+    },
+  );
+});
+
+test("★★ 上游 5xx/超时**绝不重试**（上游可能已经在出图，重试等于重复扣费）", async () => {
+  let attempts = 0;
+  await withStubbedFetch(
+    () => { attempts += 1; return jsonResponse({ error: { message: "上游炸了" } }, 500); },
+    async () => {
+      await assert.rejects(() => generateImage("一只猫", { config }), error => error.code === "IMAGE_HTTP_ERROR");
+      assert.equal(attempts, 1, "5xx 只该打一次 —— 重试可能重复扣费");
+    },
+  );
+});
+
+test("连接被拒（ECONNREFUSED）也算「没到网关」，要重试", async () => {
+  let attempts = 0;
+  await withStubbedFetch(
+    () => {
+      attempts += 1;
+      if (attempts < 2) {
+        const error = new Error("fetch failed");
+        error.cause = Object.assign(new Error("connect ECONNREFUSED"), { code: "ECONNREFUSED" });
+        throw error;
+      }
+      return jsonResponse({ data: [{ b64_json: PNG_1PX }] });
+    },
+    async () => {
+      await generateImage("一只猫", { config });
+      assert.equal(attempts, 2);
+    },
+  );
+});

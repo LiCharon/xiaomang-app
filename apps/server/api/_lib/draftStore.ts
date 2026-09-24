@@ -5,6 +5,7 @@ const store = new Map<string, {
   createdAt: string;
   titleDraft: string;
   hookDraft: string;
+  endingHookDraft: string;
   scriptDraft: string;
   rewriteDraft: string;
   translationDraft: string;
@@ -20,6 +21,7 @@ export const listDrafts = () => Array.from(store.values()).sort((a, b) => b.crea
 export const addDraft = (input: {
   titleDraft?: string;
   hookDraft?: string;
+  endingHookDraft?: string;
   scriptDraft?: string;
   rewriteDraft?: string;
   translationDraft?: string;
@@ -31,6 +33,7 @@ export const addDraft = (input: {
     createdAt: new Date().toISOString(),
     titleDraft: String(input.titleDraft || ""),
     hookDraft: String(input.hookDraft || ""),
+    endingHookDraft: String(input.endingHookDraft || ""),
     scriptDraft: String(input.scriptDraft || ""),
     rewriteDraft: String(input.rewriteDraft || ""),
     translationDraft: String(input.translationDraft || ""),

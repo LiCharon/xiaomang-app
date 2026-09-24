@@ -3,6 +3,8 @@ export type CachedFinalDraft = {
   createdAt: string;
   titleDraft?: string;
   hookDraft?: string;
+  /** 结尾钩子（与 3 秒留存分开，导出到飞书是两列）。 */
+  endingHookDraft?: string;
   scriptDraft?: string;
   rewriteDraft?: string;
   translationDraft?: string;

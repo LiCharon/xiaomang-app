@@ -812,35 +812,44 @@ test("maps final draft and benchmark video into Feishu Bitable records", () => {
   });
 
   assert.equal(records.length, 1);
-  assert.equal(records[0].fields["选题标题"], "对标视频标题");
+  assert.equal(records[0].fields["对标视频标题"], "对标视频标题");
   assert.deepEqual(records[0].fields["视频链接"], {
     text: "对标视频标题",
     link: "https://www.douyin.com/video/demo",
   });
-  assert.deepEqual(records[0].fields["视频封面"], {
-    text: "查看封面",
-    link: "https://example.com/cover.webp",
-  });
-  assert.equal(records[0].fields["视频时长"], 62);
   assert.equal(records[0].fields["作者"], "示例作者");
   assert.equal(records[0].fields["点赞数"], 123);
   assert.equal(records[0].fields["评论数"], 45);
   assert.equal(records[0].fields["转发数"], 6);
-  assert.equal(records[0].fields["收藏数"], 7);
-  assert.equal(records[0].fields["热词"], "用工合规、劳动仲裁");
+  assert.equal(records[0].fields["收藏数（红心）"], 7);
   assert.equal(records[0].fields["生成标题"], "生成标题");
-  assert.equal(records[0].fields["三秒留存"], "三秒留存");
-  assert.equal(records[0].fields["二创文案"], "二创文案");
-  assert.equal(records[0].fields["风格转写结果"], "风格转写");
-  assert.equal(records[0].fields["中英翻译结果"], "中英转写");
-  assert.equal(typeof records[0].fields["导出时间"], "number");
+  assert.equal(records[0].fields["生成3秒"], "三秒留存");
+  assert.equal(records[0].fields["原二创文案"], "二创文案");
+  // 用户 2026-09-24 明确不要的列，一个都不该再写。
+  for (const gone of ["视频封面", "视频时长", "发布时间", "热词", "风格转写结果", "中英翻译结果", "导出时间"]) {
+    assert.equal(gone in records[0].fields, false, `不该再写「${gone}」这一列`);
+  }
 });
 
-test("defines Feishu Bitable schema with a text index field", () => {
-  assert.deepEqual(BITABLE_FIELDS[0], { field_name: "选题标题", type: 1 });
+test("多维表格的列就是用户给的那 14 列（名字与顺序都钉住）", () => {
+  // 用户 2026-09-24 给的清单，顺序即口径 —— 别自己重排、别悄悄加回删掉的列。
+  assert.deepEqual(BITABLE_FIELDS.map(field => field.field_name), [
+    "对标视频标题",
+    "视频链接",
+    "作者",
+    "点赞数",
+    "评论数",
+    "转发数",
+    "收藏数（红心）",
+    "原文案",
+    "原二创文案",
+    "生成标题",
+    "生成3秒",
+    "生成结尾钩子",
+    "发布仓（发布文案＋发布标签）",
+    "封面",
+  ]);
   assert.equal(BITABLE_FIELDS.some(field => field.field_name === "视频链接" && field.type === 15), true);
-  assert.equal(BITABLE_FIELDS.some(field => field.field_name === "视频封面" && field.type === 15), true);
-  assert.equal(BITABLE_FIELDS.some(field => field.field_name === "视频时长" && field.type === 2), true);
   assert.equal(BITABLE_FIELDS.some(field => field.field_name === "点赞数" && field.type === 2), true);
 });
 
@@ -960,15 +969,13 @@ test("最终文案 markdown：带发布仓产出时追加三段，不带时保�
   assert.doesNotMatch(withoutPublish, /发布文案/);
 });
 
-test("多维表格：新增发布封面/发布文案/发布标签三列，并对空值写空串", () => {
-  const names = BITABLE_FIELDS.map(field => field.field_name);
-  for (const expected of ["发布封面", "发布文案", "发布标签"]) {
-    assert.ok(names.includes(expected), `多维表格缺少列：${expected}`);
-  }
-
+test("多维表格：发布仓合并成一列、封面一格、原文案与结尾钩子各就各位", () => {
   const [record] = finalDraftToBitableRecords({
     titleDraft: "生成标题",
-    benchmarkVideos: [{ title: "对标视频标题" }],
+    hookDraft: "3 秒文案",
+    endingHookDraft: "结尾钩子文案",
+    scriptDraft: "二创文案内容",
+    benchmarkVideos: [{ title: "对标视频标题", script: "这条视频的原文案" }],
     publishWarehouse: {
       coverUrl: "https://cdn.example.com/c.png",
       coverTitle: "封面 1",
@@ -976,13 +983,19 @@ test("多维表格：新增发布封面/发布文案/发布标签三列，并对
       tags: "#劳动法",
     },
   });
-  assert.match(record.fields["发布封面"], /https:\/\/cdn\.example\.com\/c\.png/);
-  assert.equal(record.fields["发布文案"], "发布文案内容");
-  assert.equal(record.fields["发布标签"], "#劳动法");
+  // 发布文案＋发布标签合成**一列**（用户口径），中间空一行
+  assert.equal(record.fields["发布仓（发布文案＋发布标签）"], "发布文案内容\n#劳动法");
+  assert.match(record.fields["封面"], /https:\/\/cdn\.example\.com\/c\.png/);
+  // 原文案取**这条对标视频**的原文，不是标题
+  assert.equal(record.fields["原文案"], "这条视频的原文案");
+  assert.equal(record.fields["原二创文案"], "二创文案内容");
+  assert.equal(record.fields["生成3秒"], "3 秒文案");
+  assert.equal(record.fields["生成结尾钩子"], "结尾钩子文案");
 
-  // 没经过发布仓：三列必须是空串，不能是 undefined（否则飞书那边会当成缺字段）。
+  // 没经过发布仓、也没有原文/钩子时：这些列必须是**空串**，不能是 undefined
+  // （否则飞书那边会当成缺字段）。
   const [bare] = finalDraftToBitableRecords({ titleDraft: "只有标题", benchmarkVideos: [{ title: "对标视频标题" }] });
-  assert.equal(bare.fields["发布封面"], "");
-  assert.equal(bare.fields["发布文案"], "");
-  assert.equal(bare.fields["发布标签"], "");
+  for (const name of ["原文案", "原二创文案", "生成3秒", "生成结尾钩子", "发布仓（发布文案＋发布标签）", "封面"]) {
+    assert.equal(bare.fields[name], "", `「${name}」空值要写空串`);
+  }
 });

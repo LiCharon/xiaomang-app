@@ -100,6 +100,10 @@ export const normalizeBenchmarkVideos = (input = []) => {
         shares: pickStat(item, ["shares", "share_count"]),
         bookmarks: pickStat(item, ["bookmarks", "collect_count", "favorite_count", "bookmark_count"]),
         hotTopics: Array.isArray(item?.hotTopics) ? item.hotTopics.map(value => String(value || "")).filter(Boolean) : [],
+        // 提取到的**原文案**（口播转写或平台文案）。多维表格要单独一列「原文案」——
+        // ⚠️ 不在这里带出来的话，归一化会把它剥掉，那一列永远是空的（实测踩过）。
+        script: String(item?.script || ""),
+        scriptSource: String(item?.scriptSource || ""),
       };
     })
     .filter(item => item.title || item.link);
@@ -232,6 +236,9 @@ export const buildFinalDraftMarkdown = (draft = {}, options = {}) => {
     "## 3 秒留存",
     String(draft.hookDraft || ""),
     "",
+    "## 结尾钩子",
+    String(draft.endingHookDraft || ""),
+    "",
     "## 二创文案",
     String(draft.scriptDraft || ""),
     "",
@@ -255,6 +262,7 @@ export const buildFinalDraftCsvRows = (draft = {}) => {
     ["对标选题视频", formatBenchmarkSection(draft.benchmarkVideos)],
     ["标题", String(draft.titleDraft || "")],
     ["3秒留存", String(draft.hookDraft || "")],
+    ["结尾钩子", String(draft.endingHookDraft || "")],
     ["二创文案", String(draft.scriptDraft || "")],
     ["风格转写结果", String(draft.rewriteDraft || "")],
     ["中英翻译结果", String(draft.translationDraft || "")],
@@ -267,7 +275,7 @@ export const buildFinalDraftCsvRows = (draft = {}) => {
 };
 
 export const buildDraftListCsvRows = (items = []) => [
-  ["序号", "保存时间", "对标选题视频", "标题", "3秒留存", "二创文案", "风格转写结果", "中英翻译结果", "发布封面", "发布文案", "发布标签"],
+  ["序号", "保存时间", "对标选题视频", "标题", "3秒留存", "结尾钩子", "二创文案", "风格转写结果", "中英翻译结果", "发布封面", "发布文案", "发布标签"],
   ...items.map((item, index) => {
     const cells = publishWarehouseCells(item?.publishWarehouse);
     return [
@@ -276,6 +284,7 @@ export const buildDraftListCsvRows = (items = []) => [
       formatBenchmarkSection(item?.benchmarkVideos),
       String(item?.titleDraft || ""),
       String(item?.hookDraft || ""),
+      String(item?.endingHookDraft || ""),
       String(item?.scriptDraft || ""),
       String(item?.rewriteDraft || ""),
       String(item?.translationDraft || ""),

@@ -2009,6 +2009,7 @@ app.post("/api/final-drafts", async (req, res) => {
   const {
     titleDraft = "",
     hookDraft = "",
+    endingHookDraft = "",
     scriptDraft = "",
     rewriteDraft = "",
     translationDraft = "",
@@ -2023,6 +2024,7 @@ app.post("/api/final-drafts", async (req, res) => {
       createdAt: new Date().toISOString(),
       titleDraft: String(titleDraft || ""),
       hookDraft: String(hookDraft || ""),
+      endingHookDraft: String(endingHookDraft || ""),
       scriptDraft: String(scriptDraft || ""),
       rewriteDraft: String(rewriteDraft || ""),
       translationDraft: String(translationDraft || ""),

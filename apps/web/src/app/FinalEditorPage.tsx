@@ -91,9 +91,27 @@ export default function FinalEditorPage() {
     (payload.selectedTitles || []).map((item, idx) => `${idx + 1}. ${item.title}${item.detail ? `\n${item.detail}` : ""}`)
   ));
 
+  /**
+   * 3 秒留存 = **开场钩子**（`hookType === "opening_text"`）。
+   *
+   * 🔴 原来这里把 `selectedHooks` 全塞进一个框，于是开场钩子和结尾钩子混在一起 ——
+   *    导出到飞书时「生成3秒」和「生成结尾钩子」就没法分成两列（用户 2026-09-24 的列清单
+   *    要求它们是两列）。所以按 hookType 拆开，各是各的可编辑段落。
+   */
   const [hookDraft, setHookDraft] = useState(() => joinNonEmpty(
-    (payload.selectedHooks || []).map((item, idx) => `${idx + 1}. ${item.content}`)
+    (payload.selectedHooks || [])
+      .filter(item => (item.hookType || "opening_text") === "opening_text")
+      .map((item, idx) => `${idx + 1}. ${item.content}`)
   ));
+
+  /** 结尾钩子 = `hookType === "ending_text"` 那批（单独一列，不能和 3 秒混着写）。 */
+  const [endingHookDraft, setEndingHookDraft] = useState(() => joinNonEmpty(
+    (payload.selectedHooks || [])
+      .filter(item => item.hookType === "ending_text")
+      .map((item, idx) => `${idx + 1}. ${item.content}`)
+  ));
+
+  const hasEndingHook = (payload.selectedHooks || []).some(item => item.hookType === "ending_text");
 
   const [scriptDraft, setScriptDraft] = useState(() => joinNonEmpty(
     (payload.selectedScripts || []).map((item, idx) => `【文案 ${idx + 1}】\n${item.content}`)
@@ -126,6 +144,8 @@ export default function FinalEditorPage() {
   const draftPayload = {
     titleDraft,
     hookDraft,
+    // 结尾钩子单独存一列（飞书多维表格要「生成3秒」与「生成结尾钩子」两列分开）
+    endingHookDraft,
     scriptDraft,
     rewriteDraft: hasRewriteResult ? rewriteDraft : "",
     translationDraft: hasTranslationResult ? translationDraft : "",
@@ -250,11 +270,21 @@ export default function FinalEditorPage() {
         </Card>
 
         <Card className="bg-white border-slate-200">
-          <CardHeader className="pb-2"><CardTitle className="text-base">3 秒留存</CardTitle></CardHeader>
+          <CardHeader className="pb-2"><CardTitle className="text-base">3 秒留存（开场钩子）</CardTitle></CardHeader>
           <CardContent>
             <textarea value={hookDraft} onChange={(e) => setHookDraft(e.target.value)} className="w-full min-h-28 rounded-md border border-slate-300 p-3 text-sm" />
           </CardContent>
         </Card>
+
+        {/* 结尾钩子单独一段：它和开场钩子是两类东西，导出到飞书也是两列。 */}
+        {hasEndingHook && (
+          <Card className="bg-white border-slate-200">
+            <CardHeader className="pb-2"><CardTitle className="text-base">结尾钩子</CardTitle></CardHeader>
+            <CardContent>
+              <textarea value={endingHookDraft} onChange={(e) => setEndingHookDraft(e.target.value)} className="w-full min-h-28 rounded-md border border-slate-300 p-3 text-sm" />
+            </CardContent>
+          </Card>
+        )}
 
         <Card className="bg-white border-slate-200">
           <CardHeader className="pb-2"><CardTitle className="text-base">二创文案</CardTitle></CardHeader>

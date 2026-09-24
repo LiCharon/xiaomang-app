@@ -357,31 +357,35 @@ const FEISHU_DUPLICATE_TABLE_CODES = new Set([
   "DuplicateTableName",
 ]);
 
+/**
+ * 多维表格的列（**顺序即用户口径，别自己重排**，2026-09-24 用户给的清单）。
+ *
+ * 与旧版的差异（用户要求按这一版改）：
+ *   - 改名：选题标题→对标视频标题、收藏数→收藏数（红心）、三秒留存→生成3秒、
+ *           二创文案→原二创文案、发布封面→封面
+ *   - 新增：原文案（对标视频提取到的原文）、生成结尾钩子（与 3 秒分开两列）
+ *   - 合并：发布文案＋发布标签 → 一列「发布仓（发布文案＋发布标签）」
+ *   - 移除：视频封面 / 视频时长 / 发布时间 / 热词 / 风格转写结果 / 中英翻译结果 / 导出时间
+ *
+ * 类型：文本 1、数字 2、URL 15。
+ * ⚠️「封面」用**文本**列而不是 URL 列：出图可能只回 base64，那种情况没有外链可放，
+ *    URL 列会直接空掉 —— 客户就看不出这条到底出没出图。文本列能如实写「内嵌图片（无外链）」。
+ */
 export const BITABLE_FIELDS = [
-  { field_name: "选题标题", type: 1 },
+  { field_name: "对标视频标题", type: 1 },
   { field_name: "视频链接", type: 15 },
-  { field_name: "视频封面", type: 15 },
-  { field_name: "视频时长", type: 2 },
   { field_name: "作者", type: 1 },
-  { field_name: "发布时间", type: 1 },
   { field_name: "点赞数", type: 2 },
   { field_name: "评论数", type: 2 },
   { field_name: "转发数", type: 2 },
-  { field_name: "收藏数", type: 2 },
-  { field_name: "热词", type: 1 },
+  { field_name: "收藏数（红心）", type: 2 },
+  { field_name: "原文案", type: 1 },
+  { field_name: "原二创文案", type: 1 },
   { field_name: "生成标题", type: 1 },
-  { field_name: "三秒留存", type: 1 },
-  { field_name: "二创文案", type: 1 },
-  { field_name: "风格转写结果", type: 1 },
-  { field_name: "中英翻译结果", type: 1 },
-  // 发布仓三块产出（3.1 封面 / 3.2 发布文案 / 3.3 发布标签）。
-  // ⚠️ 发布封面用**文本**列，而不是像「视频封面」那样用 URL 列：出图接口可能只回 base64，
-  //    那种情况没有外链可放，URL 列会直接空掉 —— 客户就看不出这条到底出没出图。
-  //    文本列能如实写「封面：内嵌图片（无外链）」，不静默丢信息。
-  { field_name: "发布封面", type: 1 },
-  { field_name: "发布文案", type: 1 },
-  { field_name: "发布标签", type: 1 },
-  { field_name: "导出时间", type: 5 },
+  { field_name: "生成3秒", type: 1 },
+  { field_name: "生成结尾钩子", type: 1 },
+  { field_name: "发布仓（发布文案＋发布标签）", type: 1 },
+  { field_name: "封面", type: 1 },
 ];
 
 const limitCellText = (value) => {
@@ -463,34 +467,31 @@ export const finalDraftToBitableRecords = (draft = {}) => {
       ];
 
   const publishCells = publishWarehouseCells(draft?.publishWarehouse);
+  // 「发布仓（发布文案＋发布标签）」是**一列**：发布文案一段、发布标签一段，中间空一行。
+  const publishCell = [publishCells.copy, publishCells.tags].filter(Boolean).join("\n");
 
   return videos.map((video, index) => {
     const fields = {
-      "选题标题": limitCellText(video.title || `选题 ${index + 1}`),
-      "视频时长": numberValue(video.durationSeconds),
+      "对标视频标题": limitCellText(video.title || `选题 ${index + 1}`),
       "作者": limitCellText(video.authorName || ""),
-      "发布时间": limitCellText(video.publishDate || ""),
       "点赞数": numberValue(video.likes),
       "评论数": numberValue(video.comments),
       "转发数": numberValue(video.shares),
-      "收藏数": numberValue(video.bookmarks),
-      "热词": limitCellText(Array.isArray(video.hotTopics) ? video.hotTopics.join("、") : ""),
+      "收藏数（红心）": numberValue(video.bookmarks),
+      // 原文案 = 这条对标视频**提取到的原文**（口播转写或平台文案，见 scriptSource）。
+      // 它和二创结果是两回事，所以单独一列，别拿标题去凑。
+      "原文案": limitCellText(video.script),
+      "原二创文案": limitCellText(draft.scriptDraft),
       "生成标题": limitCellText(draft.titleDraft),
-      "三秒留存": limitCellText(draft.hookDraft),
-      "二创文案": limitCellText(draft.scriptDraft),
-      "风格转写结果": limitCellText(draft.rewriteDraft),
-      "中英翻译结果": limitCellText(draft.translationDraft),
-      "发布封面": limitCellText(publishCells.cover),
-      "发布文案": limitCellText(publishCells.copy),
-      "发布标签": limitCellText(publishCells.tags),
-      "导出时间": Date.now(),
+      // 3 秒与结尾钩子**分成两列**：它们本来就是两类东西，旧版混在「三秒留存」一格里。
+      "生成3秒": limitCellText(draft.hookDraft),
+      "生成结尾钩子": limitCellText(draft.endingHookDraft),
+      "发布仓（发布文案＋发布标签）": limitCellText(publishCell),
+      "封面": limitCellText(publishCells.cover),
     };
 
     const videoLink = linkField(video.link, video.title || "对标视频");
     if (videoLink) fields["视频链接"] = videoLink;
-
-    const coverLink = linkField(video.coverUrl, "查看封面");
-    if (coverLink) fields["视频封面"] = coverLink;
 
     return { fields };
   });

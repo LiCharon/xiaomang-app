@@ -13,6 +13,7 @@ export default async function handler(req: any, res: any) {
     const item = addDraft({
       titleDraft: body?.titleDraft,
       hookDraft: body?.hookDraft,
+      endingHookDraft: body?.endingHookDraft,
       scriptDraft: body?.scriptDraft,
       rewriteDraft: body?.rewriteDraft,
       translationDraft: body?.translationDraft,

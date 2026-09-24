@@ -82,6 +82,42 @@ const toPreview = (text: string, max = 90) => {
   return normalized.length > max ? `${normalized.slice(0, max)}...` : normalized;
 };
 
+/**
+ * 这张图的 dataUrl 是不是**完整的**（没被切掉尾巴）。
+ *
+ * 为什么要判这个：出图网关产出的 2K 图曾经超过存储层上限被 `.slice()` 截断，
+ * 截断出来的 base64 **预览可能还糊得出**，但发给网关当参考图就会报
+ * 「One or more reference images are invalid…」（invalid_reference_image）——
+ * 报错完全指向别处，排查方向被带偏过一整轮（2026-09-24 实测）。
+ *
+ * 判据看**文件结束标记**：PNG 必须以 IEND 结尾、JPEG 必须以 FF D9 结尾。
+ * 缺了就是被切过。http(s) 外链没法在这儿验，一律放行（宁可漏判也不误判）。
+ */
+const isCompleteImageDataUrl = (value: string) => {
+  const data = String(value || "");
+  if (!data.startsWith("data:image/")) return true; // 外链：本地验不了，别误判
+  const base64 = data.slice(data.indexOf(",") + 1);
+  if (!base64) return false;
+  // base64 要 4 字符对齐才能解码，所以取尾部对齐后的一小段来查结束标记。
+  const take = Math.min(base64.length, 64);
+  const aligned = take - (take % 4);
+  let tail = "";
+  try {
+    tail = atob(base64.slice(base64.length - aligned));
+  } catch {
+    return false;
+  }
+  if (data.startsWith("data:image/png")) return tail.includes("IEND");
+  if (data.startsWith("data:image/jpeg")) {
+    const codes = [...tail].map(char => char.charCodeAt(0));
+    for (let index = 0; index < codes.length - 1; index += 1) {
+      if (codes[index] === 0xff && codes[index + 1] === 0xd9) return true;
+    }
+    return false;
+  }
+  return true; // 其它格式不做判断
+};
+
 /** 后端算标题字号用的设计稿宽度（对齐 publishWarehouse.js 的 TITLE_STYLE_DEFAULTS.canvasWidthPx）。 */
 const TITLE_CANVAS_WIDTH = 1080;
 
@@ -1127,6 +1163,17 @@ export default function PublishWarehousePage() {
   const selectedCoverId = activeSelection?.cover?.selectedId || "";
   const selectedCover = coverCandidates.find(item => item.id === selectedCoverId) || null;
 
+  /**
+   * 选中那张的图片数据是否完整 —— 损坏时禁止改图/导出，并给出能照做的提示。
+   *
+   * ⚠️ 必须写在 `selectedCover` **之后**：写到前面就是 TDZ
+   *    （`Cannot access 'selectedCover' before initialization`），整页掉进错误边界。
+   *    而且 `npm run build` 与单测都拦不住 —— 这类错只有真渲染才暴露（已踩一次）。
+   */
+  const selectedCoverBroken = Boolean(
+    selectedCover && !isCompleteImageDataUrl(selectedCover.image?.dataUrl || selectedCover.image?.url || ""),
+  );
+
   const copyItems = activeSelection?.publishCopy?.items || copyResult?.items || [];
   const copySelected = activeSelection?.publishCopy?.selected || [];
 
@@ -1960,6 +2007,11 @@ export default function PublishWarehousePage() {
                                 <span className="truncate text-[11px] text-slate-500">{candidate.title}</span>
                                 {/* 换类型后旧封面仍保留，标出它当时是哪一类 */}
                                 {candidateTier && <span className="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-[11px] text-slate-500">{candidateTier.code}类</span>}
+                                {/* 图片数据被截断过（早期版本的存储上限 bug）——标出来，
+                                    否则用户只会看到一个看不懂的「参考图无效」。 */}
+                                {!isCompleteImageDataUrl(candidate.image?.dataUrl || candidate.image?.url || "") && (
+                                  <span className="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-[11px] font-medium text-amber-700">图片已损坏</span>
+                                )}
                               </div>
                             </div>
                           );
@@ -1981,6 +2033,14 @@ export default function PublishWarehousePage() {
                           <span className="text-[11px] text-slate-400">每次改动都会存成新的一版，旧版保留</span>
                         </div>
                         <div className="text-[11px] text-slate-400">正在改：{selectedCover.title}</div>
+                        {selectedCoverBroken && (
+                          <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">
+                            这张封面的<span className="font-semibold">图片数据已损坏</span>
+                            （早期版本的存储上限把图截断了，字节已经丢了、修不回来）。
+                            拿它当参考图，出图网关只会回一句看不懂的「参考图无效」——
+                            请换一张候选，或重新生成一张再改。
+                          </div>
+                        )}
                         {(coverChats[selectedCover.id] || []).length > 0 && (
                           <div className="space-y-1.5">
                             {(coverChats[selectedCover.id] || []).map((item, index) => (
@@ -2008,7 +2068,7 @@ export default function PublishWarehousePage() {
                           />
                           <Button
                             className={BTN_PRIMARY}
-                            disabled={Boolean(coverChatLoading) || !coverChatInput.trim()}
+                            disabled={Boolean(coverChatLoading) || !coverChatInput.trim() || selectedCoverBroken}
                             onClick={runCoverRefine}
                           >
                             {coverChatLoading === selectedCover.id ? "改图中…" : "改图"}

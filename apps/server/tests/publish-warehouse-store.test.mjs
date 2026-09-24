@@ -214,30 +214,32 @@ test("发布仓 store", { skip }, async t => {
     assert.equal((await listPublishSelections({ ownerId: OWNER_A, customerId: CUSTOMER })).length, 0);
   });
 
-  await t.test("★ 超大的图**整张丢掉、绝不截断**（截断出来的是损坏 base64）", async () => {
+  await t.test("★ 超大的图**拒绝保存并说清怎么办**（既不截断也不静默丢图）", async () => {
     // 2026-09-24 实测的坑：网关产出的 2K 图 base64 约 5MB 字符，超过当时 4_000_000 的上限，
     // 被 .slice() 截断成**损坏的 base64**。它预览看着像图，发给网关却报
     // 「参考图无效（invalid_reference_image）」—— 排查方向完全错。
-    // 所以现在的口径是：装不下就整张丢掉、如实返回空串，让界面显示「无图片」。
-    // ⚠️ 用**刚过上限**的量级而不是几百 MB 的巨型串：这条测的是「超限怎么办」，
-    //    不是「网络能传多大」；写巨大 base64 到远程库会把整个 `npm test` 拖死。
+    // 现在的口径：超限直接拒绝保存并给出可照做的提示。
+    // 截断与静默丢图都是**看不见**的错，报错是看得见的。
     const overLimit = `data:image/png;base64,${"A".repeat(8_000_000 + 1_000)}`;
-    const saved = await savePublishSelection({
-      ownerId: OWNER_A,
-      customerId: CUSTOMER,
-      topicId: "topic-huge",
-      cover: { candidates: [{ id: "c1", image: { dataUrl: overLimit } }] },
-    });
-    const stored = saved.cover.candidates[0].image;
-    assert.equal(stored.dataUrl, "", "超限就该丢掉，不能留下截断的损坏数据");
-    assert.equal(stored.url, "");
-    // 候选本身要保留（不然用户会在列表里莫名其妙少一条），只是没有图。
-    assert.equal(saved.cover.candidates.length, 1, "候选要保留，只是没图");
+    await assert.rejects(
+      () => savePublishSelection({
+        ownerId: OWNER_A,
+        customerId: CUSTOMER,
+        topicId: "topic-huge",
+        cover: { candidates: [{ id: "c1", image: { dataUrl: overLimit } }] },
+      }),
+      error => {
+        assert.equal(error.status, 400, "应当是 400（调用方的图太大），不是 500");
+        assert.match(error.message, /超过存储上限/);
+        assert.match(error.message, /压到长边 1440/, "要告诉用户怎么办");
+        return true;
+      },
+    );
   });
 
-  await t.test("★ 网关产出的 2K 图（约 5MB 字符）必须能完整存下（不被截断）", async () => {
+  await t.test("★ 网关产出的 2K 图（约 5MB 字符）必须能完整存下（不被截断/不误拒）", async () => {
     // 这条钉住上限本身：实测一张 2K PNG 约 2.86MB，base64 后约 5MB 字符 ——
-    // 上限必须能装下它，否则正常出图的结果就会被丢掉。
+    // 上限必须能装下它，否则正常出图的结果就会被拒。
     const twoK = `data:image/png;base64,${"A".repeat(5_000_000)}`;
     const saved = await savePublishSelection({
       ownerId: OWNER_A,

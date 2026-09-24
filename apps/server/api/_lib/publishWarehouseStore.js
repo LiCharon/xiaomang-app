@@ -55,15 +55,21 @@ const normalizeImageRef = value => {
   const source = value && typeof value === "object" ? value : {};
   const url = asText(source.url);
   const dataUrl = asText(source.dataUrl);
-  // 🔴 **绝不截断**。截断出来的 base64 是损坏数据：预览要么破图，要么更糟 ——
-  //    看起来正常、发给网关却报「参考图无效」，排查方向完全错（这条踩过）。
-  //    真的超限就整张丢掉并如实返回 null，让界面显示「无图片」——
-  //    丢掉是可看见的，损坏是看不见的。前端上传时会先压图，正常不会走到这里。
-  const tooLarge = text => text.length > MAX_IMAGE_URL_CHARS;
-  return {
-    url: tooLarge(url) ? "" : url,
-    dataUrl: tooLarge(dataUrl) ? "" : dataUrl,
-  };
+  if (!url && !dataUrl) return null;
+  // 🔴 **绝不截断**：截断出来的 base64 是损坏数据 —— 预览可能还糊得出，发给网关却报
+  //    「参考图无效」，排查方向完全错（2026-09-24 实测踩了一整轮）。
+  //    也**不静默丢弃**：丢了用户只会看到候选莫名其妙没了图。
+  //    超限就直接拒绝保存并说清怎么办 —— 报错是可看见的，截断/静默丢失都看不见。
+  //    （前端上传与出图结果都会先压图，正常走不到这里，这是最后一道闸。）
+  for (const [label, text] of [["图片链接", url], ["图片数据", dataUrl]]) {
+    if (text.length > MAX_IMAGE_URL_CHARS) {
+      throw badRequest(
+        `${label}超过存储上限（约 ${Math.round(MAX_IMAGE_URL_CHARS / 1024 / 1024)}MB 字符）。`
+        + "为避免写入损坏的图片，本次保存被拒绝 —— 请先把图压到长边 1440 以内再试。",
+      );
+    }
+  }
+  return { url, dataUrl };
 };
 
 const asText = value => String(value ?? "").trim();

@@ -739,7 +739,14 @@ export default function PublishWarehousePage() {
     // 参考图同样定格：背景风格模板（模仿风格）+ IP 人像（二类同一张脸、三类换表情）。
     // ⚠️ 以前读的是页面上的一个临时上传（`referenceDataUrl`），那个入口删掉后就恒为空 ——
     //    等于「参考图编辑」这条链静默失效。现在改为读封面基底，跟着类型走。
-    const generationRefs = [baseBackgroundTemplate, basePortraitImage]
+    // 参考图按类型给：
+    //   一类：那张**固定模板**（模型要在它上面改标题、出新的整图）
+    //   二/三类：背景风格模板（模仿风格）+ IP 人像（二类同一张脸、三类换表情）
+    const generationRefs = [
+      ...(tier === "standard" ? [baseSourceImage] : []),
+      baseBackgroundTemplate,
+      basePortraitImage,
+    ]
       .filter(Boolean)
       .map(item => ({ url: item?.url || "", dataUrl: item?.dataUrl || "" }))
       .filter(item => item.url || item.dataUrl);
@@ -801,40 +808,36 @@ export default function PublishWarehousePage() {
   }, [activeSelection, baseTitleStyle, activeTopic]);
 
   /**
-   * 一类的「出封面」**不调出图**：模板（固定人像 + 固定背景）已经在基底里确认好了，
-   * 这一期只换标题文字 —— 文字由前端按标题样式叠加，所以这一步不花钱，也就没有
-   * 「确认提示词再出图」那道闸门。
+   * 一类（标准模板类）的出图提示词：**让模型在模板上直接做图片编辑**，产出一张新图。
+   *
+   * 用户口径（2026-09-24 纠正）：标准模板类**也要调生图模型** —— 固定的是人像与背景，
+   * 每期只换标题，而「换标题」这件事由模型在图上完成（旧标题也被模型替换掉）。
+   * 所以这一类**不做前端叠字**：文字是模型画在图里的。
+   *
+   * 把识别出的标题样式一并发给模型，是为了让每期标题风格保持一致（用户的原始要求）；
+   * 字号按这一期标题长度算好给出**比例**，让它按可用空间自己收。
    */
-  const makeStandardCover = async (title: string) => {
-    const template = baseBackgroundTemplate || baseSourceImage;
-    if (!template) {
-      setError("请先在「封面基底」上传固定封面模板");
-      return;
-    }
-    const text = title.trim();
-    if (!text) {
-      setError("标题不能为空");
-      return;
-    }
-    const topicId = activeTopicId;
-    const baseSel = activeSelection;
-    const existing = baseSel?.cover?.candidates || [];
-    // 同一模板下换个标题就是新的一条候选；标题相同则替换（不堆重复项）。
-    const id = `std-${text}`.slice(0, 80);
-    const candidates = [
-      ...existing.filter(item => item.id !== id),
-      { id, title: text, keywords: [], prompt: "", image: template, tier: coverSubTab },
+  const buildStandardCoverPrompt = (title: string) => {
+    const style = baseTitleStyle;
+    const metrics = titleMetrics.find(item => item.title === title);
+    const lines = [
+      "以这张封面模板为参考图，重新生成一张封面：",
+      "- 人物、背景、版式、色调与标题的字体风格严格保持不变；",
+      "- 把封面上的标题文字替换成下面这一条，**不要保留模板上原有的标题文字**；",
+      "- 标题的位置、颜色与分行方式跟模板保持一致，并按新标题的长度适当调整字号，不要溢出画面。",
+      "",
+      `新标题：${title}`,
     ];
-    try {
-      await persist(topicId, {
-        cover: { selectedId: id, candidates, titleStyle: baseTitleStyle },
-        publishCopy: baseSel?.publishCopy || null,
-        topicTags: baseSel?.topicTags || null,
-      });
-      setMessage(`已生成封面「${text}」（模板 + 标题，未调用出图）`);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "生成封面失败");
+    if (style?.fontFamily) lines.push(`标题字体风格：${style.fontFamily}`);
+    if (style?.colorDescription || style?.color) lines.push(`标题颜色：${style.colorDescription || style.color}`);
+    if (style?.position) {
+      lines.push(`标题位置：${{ top: "顶部", center: "居中", bottom: "底部" }[style.position] || style.position}`);
     }
+    if (style?.maxLines) lines.push(`标题最多占 ${style.maxLines} 行`);
+    if (metrics?.fontSizePx) {
+      lines.push(`标题字号参考：约占画面宽度的 ${Math.round((metrics.fontSizePx / TITLE_CANVAS_WIDTH) * 100)}%`);
+    }
+    return lines.join("\n");
   };
 
   /** 把标题以选定的样式叠加到封面上（纯 CSS，不依赖后端出字——模型写字会写成乱码）。 */
@@ -842,13 +845,14 @@ export default function PublishWarehousePage() {
   const overlayTitle = String(reuseTitles[0] || activeTopic?.title || "").trim();
 
   /**
-   * 候选封面上的文字。
+   * 候选上的**叠字**文字。
    *
-   * 一类（标准模板）的候选**本身就是某一期的标题**，所以直接用它；
-   * 二/三类的候选是生成图，`title` 只是「封面 N」这样的标签，文字用这条选题的标题。
+   * 二/三类的生成图里没有文字（提示词明确要求「不要写任何文字」），所以标题由前端叠；
+   * 一类相反 —— 标题是**模型画在图里**的（在模板上做图片编辑、连旧标题一起替换），
+   * 所以这一类绝不能再叠一次，否则又是两条标题。
    */
   const overlayTextFor = (candidate: CoverCandidate) => (
-    String(candidate.tier || "") === "standard" && candidate.title ? candidate.title : overlayTitle
+    String(candidate.tier || "") === "standard" ? "" : overlayTitle
   );
 
   /** 后端算好的字号（取不到就退回模板基准，保持预览可读）。 */
@@ -1438,9 +1442,11 @@ export default function PublishWarehousePage() {
 
       const anchor = document.createElement("a");
       anchor.href = canvas.toDataURL("image/png");
-      anchor.download = `${(text || "封面").slice(0, 40)}.png`;
+      // 文件名优先用候选自己的标题：一类的候选 title 就是那一期的标题（文字已由模型画进图里），
+      // 二/三类的 title 是「封面 N」这种标签，叠字文字更贴切。
+      anchor.download = `${(candidate.title || text || "封面").slice(0, 40)}.png`;
       anchor.click();
-      setMessage("已导出这张封面（PNG）");
+      setMessage(text ? "已导出这张封面（底图 + 标题，PNG）" : "已导出这张封面（PNG）");
     } catch (error) {
       setError(
         `${error instanceof Error ? error.message : "导出失败"}。`
@@ -1630,16 +1636,16 @@ export default function PublishWarehousePage() {
                             baseSourceImage,
                             file => handleBaseImageUpload(file, image => { setBaseSourceImage(image); setBaseAnalysis(null); }),
                             "上传固定封面模板",
-                            "只要人像 + 背景的底图，不要带标题文字",
+                            "人像 + 背景固定下来的那张：可以带标题，出图时会被替换掉",
                           )}
-                          {/* ⚠️ 一类只负责**叠字**，没有任何一步会擦掉原图上的文字。
-                              如果底图本身就印着标题，叠上去就会两条标题叠在一起（用户实测踩到）。
-                              识别结果里出现了字体/颜色/备注，就说明模型在这张图上读到了标题文字。 */}
+                          {/* 一类是让模型**在模板上改标题**，所以模板带不带标题都行：
+                              带标题反而更省事（模型照样式替换），不带就由它按样式加上。
+                              之前这里写的是「请换一张不含标题的底图」，那是「前端叠字」那版
+                              实现下的限制，改成出图之后就不成立了（2026-09-24 用户纠正）。 */}
                           {templateHasBakedTitle && (
-                            <div className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] leading-5 text-amber-700">
-                              这张底图上似乎已经有标题文字了。一类只往图上叠新标题，
-                              <span className="font-semibold">不会擦掉原文字</span> ——
-                              请换一张不含标题的底图（只留人像和背景），否则会出现两条标题叠在一起。
+                            <div className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] leading-5 text-slate-500">
+                              这张模板上已经有标题文字，出图时会被<span className="font-semibold">替换</span>成这一期的标题
+                              （样式沿用模板上的，也就是右边识别到的标题样式）。
                             </div>
                           )}
                         </div>
@@ -1757,10 +1763,14 @@ export default function PublishWarehousePage() {
                     <Button
                       className={BTN_PRIMARY_LG}
                       disabled={!coverReadiness.ok || Boolean(coverImageLoading) || !perTopicTitle.trim()}
-                      title={activeTier.id === "standard" ? "复用模板只叠标题，不调用出图模型" : "确认提示词后才出图（唯一花钱的一步）"}
+                      title={activeTier.id === "standard"
+                        ? "把模板交给模型做图片编辑：替换标题、产出一张新图（这一步花钱）"
+                        : "确认提示词后才出图（唯一花钱的一步）"}
                       onClick={() => {
                         if (activeTier.id === "standard") {
-                          makeStandardCover(perTopicTitle);
+                          // 一类也要真的出图：模板当参考图，交给模型在图上替换标题。
+                          // 候选的 title 存这一期的标题，方便分辨每张是哪一期出的。
+                          makeCoverImage(buildStandardCoverPrompt(perTopicTitle), perTopicTitle.trim(), []);
                           return;
                         }
                         const parts = [
@@ -1771,10 +1781,13 @@ export default function PublishWarehousePage() {
                         makeCoverImage(parts.join("\n"), `封面 ${coverCandidates.length + 1}`, []);
                       }}
                     >
-                      {activeTier.id === "standard"
-                        ? (coverImageLoading ? "生成中…" : "生成封面")
-                        : (coverImageLoading ? "出图中…（较慢）" : "生成封面")}
+                      {coverImageLoading ? "出图中…（较慢）" : "生成封面"}
                     </Button>
+                    <p className="text-[11px] leading-5 text-slate-400">
+                      {activeTier.id === "standard"
+                        ? "这一步会调生图模型：在模板上替换标题、产出一张新图（唯一花钱的步骤）。"
+                        : "这一步会调生图模型（唯一花钱的步骤）。"}
+                    </p>
                   </CardContent>
                 </Card>
 

@@ -4,7 +4,9 @@ import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { Checkbox } from "./components/ui/checkbox";
 import { Button } from "./components/ui/button";
 import { Badge } from "./components/ui/badge";
+import { ArrowLeft } from "lucide-react";
 import { apiUrl, fetchWithRetry, parseApiJson } from "./api";
+import { useAuth } from "./auth.tsx";
 import { runTopicContentAnalysis, type TopicAnalysis } from "./topicContentAnalysis";
 import {
   TOPIC_MIN_LIKES,
@@ -445,6 +447,12 @@ function LazyTopicCard({ children }: { children: ReactNode }) {
 
 export default function App() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  // 返回目标按角色分岔：员工回「今日任务」，经理回项目经理工作台 ——
+  // 直接把经理送去 /workbench 是把他扔进员工页（同一份代码两种角色都会进这一页）。
+  const isManager = user?.role === "manager";
+  const workbenchBackTo = isManager ? "/manager" : "/workbench";
+  const workbenchBackLabel = isManager ? "返回项目经理工作台" : "返回今日任务";
   const [selectedTopics, setSelectedTopics] = useState<string[]>(() => {
     try {
       const raw = sessionStorage.getItem("selectedTopicIds");
@@ -1386,14 +1394,28 @@ export default function App() {
       {/* Header */}
       <header className="border-b border-slate-200/80 bg-white/80 px-5 py-6 backdrop-blur sm:px-8 lg:px-10">
         <div className="mx-auto max-w-[1500px]">
-          <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
-            <span className="h-2 w-2 rounded-full bg-blue-600" />
-            TOPIC WORKBENCH
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <div className="mb-2 flex items-center gap-2 text-xs font-semibold tracking-[0.18em] text-blue-600">
+                <span className="h-2 w-2 rounded-full bg-blue-600" />
+                TOPIC WORKBENCH
+              </div>
+              <h1 className="text-3xl font-semibold tracking-tight text-slate-950">选题生成与选择</h1>
+              <p className="mt-2 text-sm leading-6 text-slate-500">
+                已导入客户信息与内容需求，系统自动生成运营选题
+              </p>
+            </div>
+            {/* 这一页是员工的第二步，得能退回第一步 —— 原来没有返回入口，
+                进来就只能靠浏览器后退。与内容生成页/最终编辑页同一套按钮样式。 */}
+            <Button
+              variant="outline"
+              className="h-10 rounded-xl border-slate-200 bg-white text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
+              onClick={() => navigate(workbenchBackTo)}
+            >
+              <ArrowLeft className="mr-2 h-4 w-4" />
+              {workbenchBackLabel}
+            </Button>
           </div>
-          <h1 className="text-3xl font-semibold tracking-tight text-slate-950">选题生成与选择</h1>
-          <p className="mt-2 text-sm leading-6 text-slate-500">
-            已导入客户信息与内容需求，系统自动生成运营选题
-          </p>
         </div>
       </header>
 

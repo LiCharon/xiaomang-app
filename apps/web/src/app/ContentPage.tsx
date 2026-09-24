@@ -1832,7 +1832,10 @@ export default function ContentPage() {
             variant="outline"
             className="h-10 rounded-xl border-slate-200 bg-white text-slate-600 shadow-sm hover:border-slate-300 hover:text-slate-900"
             onClick={() => {
-              window.location.href = "/";
+              // 回**选题生成页**（/topics），不是回今日任务 ——
+              // 原来写的是 `window.location.href = "/"`，对员工来说 "/" 就是今日任务，
+              // 而且整页重载会把 SPA 状态（已抓的选题、滚动位置、当前任务）一起丢掉。
+              navigate("/topics");
             }}
           >
             返回选题生成

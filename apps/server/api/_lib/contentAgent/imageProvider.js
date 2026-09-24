@@ -18,9 +18,66 @@
  *   3. `data[].url` 与 `data[].b64_json` 两种返回都要认（网关配置不同返回不同）。
  */
 
+import { EnvHttpProxyAgent, ProxyAgent } from "undici";
+
 const DEFAULT_BASE_URL = "https://xxcapi.com";
 const DEFAULT_MODEL = "gpt-image-2.5-sunburst";
 const DEFAULT_TIMEOUT_MS = 180_000;
+
+/**
+ * 出图的代理 dispatcher —— 与 `providers.js` 的媒体抓取同一套做法。
+ *
+ * 为什么要有：出图以前用**裸 fetch**，而媒体抓取早就支持代理了。于是同一台机器上
+ * 「抓视频能过、出图却 fetch failed」（2026-09-24 实测：2ms 就失败，根本没发出去）。
+ * 有些网络里 `xxcapi.com` 只能经代理访问，不给配置项就等于出图在这类网络里永远不可用。
+ */
+const imageProxyDispatchers = new Map();
+const getImageFetchDispatcher = (config = {}) => {
+  const proxyUrl = String(config.proxyUrl || "").trim();
+  if (proxyUrl) {
+    const cacheKey = `proxy:${proxyUrl}`;
+    if (!imageProxyDispatchers.has(cacheKey)) imageProxyDispatchers.set(cacheKey, new ProxyAgent(proxyUrl));
+    return imageProxyDispatchers.get(cacheKey);
+  }
+  const envProxy = config.useEnvProxy !== false && Boolean(
+    process.env.HTTPS_PROXY || process.env.https_proxy
+    || process.env.HTTP_PROXY || process.env.http_proxy
+    || process.env.ALL_PROXY || process.env.all_proxy,
+  );
+  if (envProxy) {
+    if (!imageProxyDispatchers.has("env")) imageProxyDispatchers.set("env", new EnvHttpProxyAgent());
+    return imageProxyDispatchers.get("env");
+  }
+  return null;
+};
+
+/**
+ * 把 fetch 的网络层失败翻译成**能照做**的中文。
+ *
+ * `fetch failed` 本身什么都没说 —— 真正的原因在 `error.cause` 里
+ * （ENOTFOUND / ECONNREFUSED / ETIMEDOUT / 证书错误）。2026-09-24 实测日志里
+ * 只有 `error="fetch failed"`，既看不出是域名没解析还是连不上还是被拦。
+ */
+const describeNetworkError = error => {
+  const cause = error?.cause;
+  const code = String(cause?.code || cause?.name || "").toUpperCase();
+  const reason = String(cause?.message || error?.message || "").trim();
+  const hints = {
+    ENOTFOUND: "域名解析失败（DNS 查不到这个域名，常见于代理/VPN 的 DNS 没有放行，或域名写错）",
+    EAI_AGAIN: "域名解析暂时失败（DNS 不可达，稍后重试或检查 DNS/代理）",
+    ECONNREFUSED: "连接被拒绝（目标没在监听，或代理没开）",
+    ECONNRESET: "连接被重置（可能被网络中间层拦截，检查是否需要代理）",
+    ETIMEDOUT: "连接超时（网络到不了目标，检查是否需要代理）",
+    UND_ERR_CONNECT_TIMEOUT: "连接超时（网络到不了目标，检查是否需要代理）",
+    CERT_HAS_EXPIRED: "证书已过期",
+    UNABLE_TO_VERIFY_LEAF_SIGNATURE: "证书链校验失败",
+    DEPTH_ZERO_SELF_SIGNED_CERT: "自签名证书（若走的是自己的代理，忽略证书即可）",
+  };
+  const hint = hints[code];
+  const parts = [`发不出去：${hint || reason || "网络请求失败"}`];
+  if (code) parts.push(`(${code})`);
+  return parts.join(" ");
+};
 
 /** 单张参考图的体积上限。base64 后还会膨胀 4/3，太大网关会直接拒。 */
 export const MAX_REFERENCE_IMAGE_BYTES = 8 * 1024 * 1024;
@@ -59,6 +116,16 @@ export const getImageConfig = (env = process.env) => ({
   apiKey: pickEnv(env, "XXCAPI_API_KEY", "XINGCHEN_API_KEY"),
   model: pickEnv(env, "XXCAPI_IMAGE_MODEL", "XINGCHEN_IMAGE_MODEL") || DEFAULT_MODEL,
   timeoutMs: asNumber(pickEnv(env, "XXCAPI_TIMEOUT_MS", "XINGCHEN_TIMEOUT_MS"), DEFAULT_TIMEOUT_MS),
+  /**
+   * 出图走的代理 —— 与媒体抓取那套（`mediaProxyUrl` / `mediaUseEnvProxy`）同一套写法。
+   *
+   * 为什么需要：`xxcapi.com` 在有些网络里只能经代理访问（本机就出现过解析不了它的
+   * 情况，见 HANDOFF §0.3-H 的 fake-IP DNS 抖动）。媒体抓取早就支持代理了，
+   * **出图却一直用裸 fetch**，于是同一台机器上「抓视频能过、出图 fetch failed」。
+   */
+  proxyUrl: pickEnv(env, "XXCAPI_PROXY_URL", "XINGCHEN_PROXY_URL", "IMAGE_PROXY_URL"),
+  // 与媒体一致：默认认 HTTPS_PROXY / HTTP_PROXY / ALL_PROXY 这类环境变量。
+  useEnvProxy: String(pickEnv(env, "IMAGE_USE_ENV_PROXY") || "true").toLowerCase() !== "false",
 });
 
 /** 出图功能是否可用（没配 key 就是不可用，由调用方如实降级而不是报 500）。 */
@@ -151,11 +218,15 @@ const buildError = (message, code, details) => {
 };
 
 /** 统一的 fetch 包装：超时 + 把非 2xx 的错误文本带回来（网关的报错很有用）。 */
-const postWithTimeout = async (url, init, timeoutMs) => {
+const postWithTimeout = async (url, init, timeoutMs, dispatcher = null) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    const response = await fetch(url, { ...init, signal: controller.signal });
+    const response = await fetch(url, {
+      ...init,
+      signal: controller.signal,
+      ...(dispatcher ? { dispatcher } : {}),
+    });
     const text = await response.text();
     if (!response.ok) {
       // 🔴 上游的话必须进**错误消息本身**，不能只塞在 details 里。
@@ -172,8 +243,7 @@ const postWithTimeout = async (url, init, timeoutMs) => {
         // 截断：网关报错里可能回带请求体片段，别让日志被撑爆。
         { status: response.status, body: text.slice(0, 500) },
       );
-    }
-    try {
+    }    try {
       return JSON.parse(text);
     } catch {
       throw buildError("出图接口返回的不是 JSON", "IMAGE_BAD_JSON", { body: text.slice(0, 300) });
@@ -182,7 +252,17 @@ const postWithTimeout = async (url, init, timeoutMs) => {
     if (error?.name === "AbortError") {
       throw buildError(`出图超时（${timeoutMs}ms）`, "IMAGE_TIMEOUT");
     }
-    throw error;
+    // ⚠️ 我们自己抛的那几个（IMAGE_* 系列，比如上面的非 2xx）**原样上抛** ——
+    //    它们是在 try 里抛出去的，会先被这个 catch 接住；不加这层判断就会被当成
+    //    网络失败再包一次，于是「403：余额不足」变成「发不出去：undefined」，
+    //    把真正的上游原因盖掉（这条被子测抓过）。
+    if (error?.code && String(error.code).startsWith("IMAGE_")) throw error;
+    // 网络层失败（DNS / 连接 / 证书）原样抛出去只有「fetch failed」四个字，
+    // 日志里完全看不出原因 —— 翻译成中文再抛。
+    throw buildError(describeNetworkError(error), "IMAGE_NETWORK_ERROR", {
+      causeCode: error?.cause?.code,
+      causeMessage: error?.cause?.message,
+    });
   } finally {
     clearTimeout(timer);
   }
@@ -235,6 +315,7 @@ export const generateImage = async (prompt, options = {}) => {
       body: JSON.stringify(body),
     },
     config.timeoutMs,
+    getImageFetchDispatcher(config),
   );
 
   const images = normalizeImageResponse(payload);
@@ -309,6 +390,7 @@ export const editImage = async (prompt, referenceImages = [], options = {}) => {
     joinUrl(config.baseUrl, "/v1/images/edits"),
     { method: "POST", headers: { Authorization: `Bearer ${config.apiKey}` }, body: form },
     config.timeoutMs,
+    getImageFetchDispatcher(config),
   );
 
   const images = normalizeImageResponse(payload);
@@ -341,7 +423,9 @@ const resolveReferenceBytes = async (item) => {
 
   const url = asText(item?.url);
   if (!url) throw buildError("参考图缺少 url 或 dataUrl", "IMAGE_BAD_REFERENCE", { status: 400 });
-  const response = await fetch(url);
+  // 参考图也走同一套代理：那张图可能只在代理网络里可达（对标封面、TikTok 封面等）。
+  const referenceDispatcher = getImageFetchDispatcher(getImageConfig());
+  const response = await fetch(url, referenceDispatcher ? { dispatcher: referenceDispatcher } : {});
   if (!response.ok) {
     throw buildError(`下载参考图失败（${response.status}）`, "IMAGE_REFERENCE_DOWNLOAD_FAILED", { status: 400 });
   }

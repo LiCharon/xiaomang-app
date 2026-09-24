@@ -280,3 +280,40 @@ test("上游 2xx 但什么都没回时：如实说「上游没有给出原因」
     },
   );
 });
+
+test("★ 网络层失败要翻译成中文原因（「fetch failed」什么都没说）", async () => {
+  // 2026-09-24 实测：出图日志只有 error="fetch failed"（2ms 就失败，请求根本没发出去）。
+  // 真正的原因在 error.cause（ENOTFOUND / ECONNREFUSED / …）里，不翻译就只能靠猜，
+  // 而这两种原因的处置完全不同：域名解析失败多半是代理/DNS 没放行，连接被拒是代理没开。
+  await withStubbedFetch(
+    () => {
+      const error = new Error("fetch failed");
+      error.cause = Object.assign(new Error("getaddrinfo ENOTFOUND xxcapi.com"), { code: "ENOTFOUND" });
+      throw error;
+    },
+    async () => {
+      await assert.rejects(
+        () => generateImage("一只猫", { config }),
+        error => {
+          assert.equal(error.code, "IMAGE_NETWORK_ERROR", "网络失败要有独立的 code，别混进 IMAGE_HTTP_ERROR");
+          assert.match(error.message, /域名解析失败/, "要给出中文原因");
+          assert.match(error.message, /ENOTFOUND/, "也要带上原始 code");
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test("★ 配了出图代理时，请求必须带上 dispatcher（裸 fetch 在只能走代理的网络里必挂）", async () => {
+  // 出图以前用裸 fetch，而媒体抓取早就支持代理 —— 于是同一台机器上
+  // 「抓视频能过、出图 fetch failed」。这条钉住「配置了就要真的用上」。
+  await withStubbedFetch(
+    () => jsonResponse({ data: [{ b64_json: PNG_1PX }] }),
+    async calls => {
+      await generateImage("一只猫", { config: { ...config, proxyUrl: "http://127.0.0.1:7890" } });
+      assert.ok(calls.length > 0, "要发出请求");
+      assert.ok(calls[0].init.dispatcher, "配了 proxyUrl 就必须带 dispatcher");
+    },
+  );
+});

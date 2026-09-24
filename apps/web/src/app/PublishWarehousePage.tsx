@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { Check, Upload } from "lucide-react";
+import { Check, Upload, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { apiUrl, fetchWithRetry } from "./api";
@@ -369,6 +369,8 @@ export default function PublishWarehousePage() {
   const [coverChats, setCoverChats] = useState<Record<string, Array<{ role: "user" | "model"; text: string }>>>({});
   const [coverChatInput, setCoverChatInput] = useState("");
   const [coverChatLoading, setCoverChatLoading] = useState("");
+  /** 正在删除哪一张候选 —— in-flight 守卫，防双击删两条。 */
+  const [coverDeletingId, setCoverDeletingId] = useState("");
 
   // 逐条的标题字号（后端算）——按「这条选题的标题」取。
   const [titleMetrics, setTitleMetrics] = useState<TitleMetric[]>([]);
@@ -1174,6 +1176,43 @@ export default function PublishWarehousePage() {
     selectedCover && !isCompleteImageDataUrl(selectedCover.image?.dataUrl || selectedCover.image?.url || ""),
   );
 
+  /**
+   * 删掉一张封面候选。
+   *
+   * ⚠️ 删掉的正好是**当前选中**那张时，必须同时改选（退到剩下的最后一张；一张不剩就清空）——
+   *    否则「已选」会指向一个已经不存在的候选，后续改图/导出都会拿着空引用去跑。
+   *    这条在报告列表那边踩过（HANDOFF §6.5㉙）。
+   * 单击删除 + in-flight 守卫（与项目里其它列表删除同一套 UX，不弹二次确认）。
+   */
+  const removeCoverCandidate = async (candidateId: string) => {
+    if (!candidateId || coverDeletingId) return;
+    const remaining = coverCandidates.filter(item => item.id !== candidateId);
+    const nextSelectedId = selectedCoverId === candidateId
+      ? (remaining[remaining.length - 1]?.id || "")
+      : selectedCoverId;
+    setCoverDeletingId(candidateId);
+    setError("");
+    try {
+      await persist(activeTopicId, {
+        cover: { selectedId: nextSelectedId, candidates: remaining, titleStyle: coverTitleStyle || null },
+        publishCopy: activeSelection?.publishCopy || null,
+        topicTags: activeSelection?.topicTags || null,
+      });
+      // 对话记录跟着清掉：候选都没了，留着那串调整记录只会让人以为还能接着改。
+      setCoverChats(prev => {
+        if (!prev[candidateId]) return prev;
+        const next = { ...prev };
+        delete next[candidateId];
+        return next;
+      });
+      setMessage(remaining.length > 0 ? "已删除这张封面" : "已删除这张封面 —— 这条选题现在没有候选了");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "删除封面失败");
+    } finally {
+      setCoverDeletingId("");
+    }
+  };
+
   const copyItems = activeSelection?.publishCopy?.items || copyResult?.items || [];
   const copySelected = activeSelection?.publishCopy?.selected || [];
 
@@ -1959,8 +1998,19 @@ export default function PublishWarehousePage() {
                           return (
                             <div
                               key={candidate.id}
-                              className={`overflow-hidden rounded-xl border transition ${isSelected ? "border-blue-400 ring-2 ring-blue-200" : "border-slate-200"}`}
+                              className={`group relative overflow-hidden rounded-xl border transition ${isSelected ? "border-blue-400 ring-2 ring-blue-200" : "border-slate-200"}`}
                             >
+                              {/* 删除放**左上角**：右上角被「已选」的勾占了，两个叠一起会互相盖住。
+                                  单击即删 + in-flight 守卫（与项目里其它列表删除同一套 UX）。 */}
+                              <button
+                                type="button"
+                                disabled={coverDeletingId === candidate.id}
+                                onClick={() => removeCoverCandidate(candidate.id)}
+                                title="删除这张封面候选"
+                                className="absolute left-1.5 top-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-full bg-slate-900/55 text-white opacity-0 backdrop-blur-sm transition hover:bg-red-600 focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-60"
+                              >
+                                <X className="h-3.5 w-3.5" />
+                              </button>
                               <button
                                 type="button"
                                 className="relative block w-full [container-type:inline-size]"

@@ -158,8 +158,16 @@ const postWithTimeout = async (url, init, timeoutMs) => {
     const response = await fetch(url, { ...init, signal: controller.signal });
     const text = await response.text();
     if (!response.ok) {
+      // 🔴 上游的话必须进**错误消息本身**，不能只塞在 details 里。
+      //    2026-09-24 实测：出图 403，日志只有「出图接口返回 403」——
+      //    而网关其实回了原因（余额不足 / 模型无权限 / 端点未开通），全被丢掉了，
+      //    于是没法判断该找谁、该改什么。路由只记录 error.message，
+      //    所以能照做的信息必须拼进 message。
+      const upstream = String(text || "").replace(/\s+/g, " ").slice(0, 200);
       throw buildError(
-        `出图接口返回 ${response.status}`,
+        upstream
+          ? `出图接口返回 ${response.status}：${upstream}`
+          : `出图接口返回 ${response.status}（上游没有给出原因）`,
         "IMAGE_HTTP_ERROR",
         // 截断：网关报错里可能回带请求体片段，别让日志被撑爆。
         { status: response.status, body: text.slice(0, 500) },

@@ -242,3 +242,41 @@ test("日志里不出现密钥与图片内容（只记长度/张数/耗时）", 
   assert.ok(logged.some(item => item.event === "image.generate.start"));
   assert.ok(logged.some(item => item.event === "image.generate.done"));
 });
+
+test("★ 上游非 2xx 时：原因必须进**错误消息**（否则 403 无从判断）", async () => {
+  // 2026-09-24 实测：出图返回 403，日志里只有「出图接口返回 403」——
+  // 网关其实回了原因（余额不足 / 没有该模型权限 / 端点未开通），全被丢掉了，
+  // 于是既不知道该找谁、也不知道该改什么。路由只记录 error.message，
+  // 所以能照做的信息必须拼进 message，不能只塞在 details 里。
+  await withStubbedFetch(
+    () => jsonResponse({ error: { message: "余额不足，请充值" } }, 403),
+    async () => {
+      await assert.rejects(
+        () => generateImage("一只猫", { config }),
+        error => {
+          assert.equal(error.code, "IMAGE_HTTP_ERROR");
+          assert.equal(error.status, 403, "HTTP 码要挂到 error.status（两个后端按它取响应码）");
+          assert.match(error.message, /403/, "消息里要带状态码");
+          assert.match(error.message, /余额不足/, "上游原话必须进消息，否则无从判断原因");
+          assert.ok(String(error.details?.body || "").includes("余额不足"), "details 里保留原始返回体");
+          return true;
+        },
+      );
+    },
+  );
+});
+
+test("上游 2xx 但什么都没回时：如实说「上游没有给出原因」，不编一个", async () => {
+  await withStubbedFetch(
+    () => new Response("", { status: 500 }),
+    async () => {
+      await assert.rejects(
+        () => generateImage("一只猫", { config }),
+        error => {
+          assert.match(error.message, /上游没有给出原因/);
+          return true;
+        },
+      );
+    },
+  );
+});

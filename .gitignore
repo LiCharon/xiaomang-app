@@ -16,3 +16,4 @@ deploy/local.env
 
 deploy/app.env
 deploy/mongo.env
+.deploy/

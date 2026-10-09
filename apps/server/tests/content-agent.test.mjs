@@ -1,4 +1,5 @@
 import test from "node:test";
+import { Readable } from "node:stream";
 import assert from "node:assert/strict";
 
 import {
@@ -13,7 +14,7 @@ import { runContentAgentWorkflow } from "../api/_lib/contentAgent/index.js";
 import { getContentAgentConfig, shouldUseContentAgent } from "../api/_lib/contentAgent/config.js";
 import { fetchJson } from "../api/_lib/contentAgent/http.js";
 import { DRAMA_BENCHMARK_ANALYSIS_PROMPT, GOLD_THREE_SECONDS_PROMPT, SPOKEN_BENCHMARK_ANALYSIS_PROMPT } from "../api/_lib/contentAgent/prompts.js";
-import { buildCreativeFallback, buildFfmpegAudioExtractArgs, buildTikHubVideoAttempts, decryptWeChatChannelsMediaBuffer, describeVideoUrlForDiagnostics, isDirectMp4Url, recognizeDoubaoAudio, resolveTikHubVideo, resolveWeChatChannelsTopicVideo, runCreativeAgents, shouldStreamVideoInputForFfmpeg } from "../api/_lib/contentAgent/providers.js";
+import { buildCreativeFallback, buildFfmpegAudioExtractArgs, buildTikHubVideoAttempts, clearResolveCacheForTests, clearTranscriptCacheForTests, guardStreamErrors, recognizeDoubaoFileAudio, transcribeVideo, decryptWeChatChannelsMediaBuffer, describeVideoUrlForDiagnostics, isDirectMp4Url, recognizeDoubaoAudio, resolveTikHubVideo, resolveWeChatChannelsTopicVideo, runCreativeAgents, shouldStreamVideoInputForFfmpeg } from "../api/_lib/contentAgent/providers.js";
 import { generateKeystream } from "../api/_lib/contentAgent/vendor/wechatKeystream.mjs";
 import { buildFinalDraftMarkdown, normalizeBenchmarkVideos, normalizePublishWarehouse, publishWarehouseCells } from "../api/_lib/exportFormatters.js";
 import { BITABLE_FIELDS, finalDraftToBitableRecords, markdownToFeishuBlocks, parseFeishuBitableUrl } from "../api/_lib/feishuClient.js";
@@ -70,6 +71,8 @@ test("builds TikTok-specific TikHub video resolve endpoints", () => {
 });
 
 test("preserves multiple TikHub CDN video candidates for failover", async () => {
+  // 解析结果现在是跨用例共享的进程内缓存；不清理会让本用例命中别的用例造的数据。
+  clearResolveCacheForTests();
   const originalFetch = global.fetch;
   global.fetch = async () => new Response(JSON.stringify({
     data: {
@@ -117,6 +120,140 @@ test("preserves multiple TikHub CDN video candidates for failover", async () => 
     ]);
   } finally {
     global.fetch = originalFetch;
+  }
+});
+
+// ── TikHub 解析缓存（2026-09-24）────────────────────────────────────────────
+// 2.2 黄金三秒与 2.3 结尾钩子跑同一批视频的同一个 link，解析是纯重复劳动。
+// 这里钉住四条不变量，都是**静默出错**那类：错了不会抛异常，只会白烧额度、
+// 或者更糟 —— 把一次失败记成「这条视频解析不出来」。
+
+/** 造一个 TikHub 成功响应，并记录 fetch 被调了几次。 */
+const stubTikHubFetch = payloadFactory => {
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return new Response(JSON.stringify({ data: payloadFactory() }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  return {
+    calls: () => calls,
+    restore: () => { global.fetch = originalFetch; },
+  };
+};
+
+const TIKHUB_TEST_CONFIG = {
+  tikhubApiToken: "test-token",
+  tikhubBaseUrl: "https://api.tikhub.dev",
+  requestTimeoutMs: 1000,
+  apiRetryAttempts: 0,
+  apiRetryBaseDelayMs: 1,
+};
+
+const tikHubVideoPayload = cover => ({
+  aweme_id: "7658162275022277895",
+  desc: "候选视频",
+  cover,
+  video: { play_addr: { url_list: ["https://v16m.tiktokcdn-us.com/a/video.mp4"] } },
+});
+
+test("同一条链接第二次解析命中缓存，不再打 TikHub（2.3 复用 2.2 的关键）", async () => {
+  clearResolveCacheForTests();
+  const stub = stubTikHubFetch(() => tikHubVideoPayload("https://example.com/cover.jpg"));
+  try {
+    const link = "https://www.tiktok.com/@demo/video/7658162275022277895";
+    const first = await resolveTikHubVideo(link, { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 60_000 }, { platform: "tiktok" });
+    const second = await resolveTikHubVideo(link, { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 60_000 }, { platform: "tiktok" });
+
+    assert.equal(stub.calls(), 1, "第二次必须走缓存，不能再打一次 TikHub");
+    assert.equal(first.videoUrl, second.videoUrl, "复用到的直链必须一致");
+    assert.equal(second.cached, true, "命中缓存要如实标出来，便于日志辨认");
+    assert.equal(second.musicUrl ?? "", first.musicUrl ?? "", "musicUrl 也要一起复用（tikhub-music 快路径靠它）");
+  } finally {
+    stub.restore();
+    clearResolveCacheForTests();
+  }
+});
+
+test("平台不同不能串用缓存：同一条链接在 douyin / tiktok 下各解析一次", async () => {
+  clearResolveCacheForTests();
+  const stub = stubTikHubFetch(() => tikHubVideoPayload("https://example.com/cover.jpg"));
+  try {
+    const link = "https://www.tiktok.com/@demo/video/7658162275022277895";
+    await resolveTikHubVideo(link, { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 60_000 }, { platform: "tiktok" });
+    await resolveTikHubVideo(link, { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 60_000 }, { platform: "douyin" });
+    assert.equal(stub.calls(), 2, "键里带了 platform，两个平台必须各解析一次");
+  } finally {
+    stub.restore();
+    clearResolveCacheForTests();
+  }
+});
+
+test("解析失败不进缓存 —— 一次网络抖动不能被记住 30 分钟", async () => {
+  clearResolveCacheForTests();
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    // 所有端点都失败 → 解析不出 videoUrl → 抛 VIDEO_URL_MISSING
+    return new Response(JSON.stringify({ error: "boom" }), { status: 500, headers: { "Content-Type": "application/json" } });
+  };
+  try {
+    const link = "https://www.tiktok.com/@demo/video/7658162275022277895";
+    const config = { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 60_000 };
+    await assert.rejects(() => resolveTikHubVideo(link, config, { platform: "tiktok" }), /Unable to resolve playable video URL/);
+    const afterFirst = calls;
+    await assert.rejects(() => resolveTikHubVideo(link, config, { platform: "tiktok" }), /Unable to resolve playable video URL/);
+    assert.ok(calls > afterFirst, "失败后必须真的重试，说明失败没被缓存下来");
+  } finally {
+    global.fetch = originalFetch;
+    clearResolveCacheForTests();
+  }
+});
+
+test("并发请求同一条链接只打一次 TikHub —— 存 Promise 才挡得住预取窗口的并发", async () => {
+  clearResolveCacheForTests();
+  const originalFetch = global.fetch;
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    // 刻意留一点延迟，让两个调用真的重叠（否则串行执行测不出并发收敛）
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return new Response(JSON.stringify({ data: tikHubVideoPayload("https://example.com/cover.jpg") }), {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    });
+  };
+  try {
+    const link = "https://www.tiktok.com/@demo/video/7658162275022277895";
+    const config = { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 60_000 };
+    const [a, b] = await Promise.all([
+      resolveTikHubVideo(link, config, { platform: "tiktok" }),
+      resolveTikHubVideo(link, config, { platform: "tiktok" }),
+    ]);
+    assert.equal(calls, 1, "并发必须收敛成一次真实解析");
+    assert.equal(a.videoUrl, b.videoUrl);
+  } finally {
+    global.fetch = originalFetch;
+    clearResolveCacheForTests();
+  }
+});
+
+test("TTL 设为 0 关闭缓存（可回退到旧行为）", async () => {
+  clearResolveCacheForTests();
+  const stub = stubTikHubFetch(() => tikHubVideoPayload("https://example.com/cover.jpg"));
+  try {
+    const link = "https://www.tiktok.com/@demo/video/7658162275022277895";
+    const config = { ...TIKHUB_TEST_CONFIG, resolveCacheTtlMs: 0 };
+    await resolveTikHubVideo(link, config, { platform: "tiktok" });
+    await resolveTikHubVideo(link, config, { platform: "tiktok" });
+    assert.equal(stub.calls(), 2, "TTL=0 时必须每次都真解析");
+  } finally {
+    stub.restore();
+    clearResolveCacheForTests();
   }
 });
 
@@ -635,13 +772,22 @@ test("creative agents retry only their own failed node and keep successful outpu
   global.fetch = async (_url, options = {}) => {
     const body = JSON.parse(String(options.body || "{}"));
     const system = body.messages?.[0]?.content || "";
-    const agent = system.includes("短视频爆款标题生成助手")
+    // 标题有两个提示词：旧的自由创作口径（「短视频爆款标题生成助手」）与
+    // 2.3 标题的按配比二创口径（「短视频爆款标题二创专家」）。两个都要认，
+    // 否则按配比那条会被误判成 ending，本测试就测不到标题节点的重试了。
+    //
+    // JSON 修复器也要**单独认出来**：`runJsonAgent` 在归一化失败时会追发一次
+    // 修复请求，它同样走 global.fetch；不单独归类就会落到末尾兜底的 ending，
+    // 把 ending 的调用数平白加一（断言 ending === 1 会假失败）。
+    const agent = system.includes("短视频爆款标题")
       ? "title"
       : system.includes("改写爆款抖音短视频文案助手")
         ? "script"
         : system.includes("短视频开场文案")
           ? "opening"
-          : "ending";
+          : system.includes("严格 JSON 修复器")
+            ? "jsonRepair"
+            : "ending";
     const count = (callsByBody.get(agent) || 0) + 1;
     callsByBody.set(agent, count);
 
@@ -657,6 +803,13 @@ test("creative agents retry only their own failed node and keep successful outpu
       ending: JSON.stringify({ output: { extracted_result: "无", rcs: [] } }),
       title: "1. 《重试后成功标题》\n类型：数字型",
       script: "重试不影响其他 Agent 的二创文案",
+      // 标题节点已改成 JSON 结构化输出；模型偶尔回非 JSON，修复器按标题的输出
+      // 契约返回，让重试路径能走完（本测试关心的是「只重试自己那一个节点」）。
+      jsonRepair: JSON.stringify({
+        originalType: "unknown",
+        reason: "",
+        items: [{ index: 1, type: "knowledge", content: "重试后成功标题" }],
+      }),
     }[agent];
 
     return new Response(JSON.stringify({
@@ -998,4 +1151,274 @@ test("多维表格：发布仓合并成一列、封面一格、原文案与结�
   for (const name of ["原文案", "原二创文案", "生成3秒", "生成结尾钩子", "发布仓（发布文案＋发布标签）", "封面"]) {
     assert.equal(bare.fields[name], "", `「${name}」空值要写空串`);
   }
+});
+
+// ── 豆包录音文件识别 2.0（异步 submit + 轮询 query，2026-09-28）──────────────
+// 这条通道与 flash 同步接口是两条独立链路，最容易出的错都很安静：
+// 把 task_id 当成响应里的字段（实际就是自己传的 X-Api-Request-Id）、
+// 把"处理中"当成失败、或者超时后不肯回退把整批挂死。
+
+/** 造一个按顺序应答的 fetch 桩，记录每次请求的 URL 与请求头。 */
+const stubSequenceFetch = handlers => {
+  const originalFetch = global.fetch;
+  const calls = [];
+  let index = 0;
+  global.fetch = async (url, init = {}) => {
+    const headers = init.headers || {};
+    calls.push({ url: String(url), headers, body: init.body ? JSON.parse(String(init.body)) : null });
+    const handler = handlers[Math.min(index, handlers.length - 1)];
+    index += 1;
+    return handler({ url: String(url), headers, body: init.body ? JSON.parse(String(init.body)) : null });
+  };
+  return { calls, restore: () => { global.fetch = originalFetch; } };
+};
+
+const doubaoTextResponse = (code, text) => new Response(
+  JSON.stringify(text === undefined ? {} : { audio_info: { duration: 1234 }, result: { text } }),
+  { status: 200, headers: { "Content-Type": "application/json", "X-Api-Status-Code": code, "X-Api-Message": code === "20000001" ? "[Processing in progress]" : "OK", "X-Tt-Logid": "logid-1" } },
+);
+
+const FILE_ASR_CONFIG = {
+  ...TIKHUB_TEST_CONFIG,
+  doubaoApiKey: "test-asr-key",
+  doubaoFileAsrResourceId: "volc.seedasr.auc",
+  doubaoFileAsrSubmitUrl: "https://openspeech.example/submit",
+  doubaoFileAsrQueryUrl: "https://openspeech.example/query",
+  doubaoFileAsrPollIntervalMs: 200,
+  doubaoFileAsrBudgetMs: 5000,
+  apiRetryAttempts: 0,
+  requestTimeoutMs: 1000,
+};
+
+test("录音文件识别：task_id 就是自己传的 X-Api-Request-Id，submit 与每次 query 必须同一个", async () => {
+  const stub = stubSequenceFetch([
+    () => doubaoTextResponse("20000000"),   // submit 成功（响应体是 {}，没有 task_id）
+    () => doubaoTextResponse("20000001"),   // 处理中
+    () => doubaoTextResponse("20000000", "识别出来的文案"),  // 成功
+  ]);
+  try {
+    const result = await recognizeDoubaoFileAudio(
+      { audioUrl: "https://cdn.example/a.mp3", audioFormat: "mp3" },
+      FILE_ASR_CONFIG,
+      { logger: { info(){}, warn(){}, error(){} } },
+    );
+    assert.equal(result.text, "识别出来的文案");
+    assert.equal(stub.calls.length, 3, "应为 submit + 2 次 query");
+    const ids = stub.calls.map(c => c.headers["X-Api-Request-Id"]);
+    assert.ok(ids[0], "submit 必须带 X-Api-Request-Id");
+    assert.equal(new Set(ids).size, 1, "3 次请求必须是同一个 UUID —— 它就是 task_id，换了就查不到结果");
+    assert.equal(result.taskId, ids[0], "返回的 taskId 要能让调用方追溯");
+    // 资源 ID 必须是 2.0
+    assert.equal(stub.calls[0].headers["X-Api-Resource-Id"], "volc.seedasr.auc");
+    // 只传 URL，不传 base64
+    assert.equal(stub.calls[0].body.audio.url, "https://cdn.example/a.mp3");
+    assert.equal(stub.calls[0].body.audio.data, undefined, "新接口不接受 base64");
+  } finally { stub.restore(); }
+});
+
+test("录音文件识别：submit 失败必须立刻抛，不能白轮询", async () => {
+  const stub = stubSequenceFetch([() => doubaoTextResponse("45000001")]);
+  try {
+    await assert.rejects(
+      () => recognizeDoubaoFileAudio({ audioUrl: "https://cdn.example/a.mp3" }, FILE_ASR_CONFIG, { logger: { info(){}, warn(){}, error(){} } }),
+      error => error.code === "DOUBAO_ASR_FAILED" && /submit/.test(String(error.details?.phase)),
+    );
+    assert.equal(stub.calls.length, 1, "submit 失败后不该再发 query");
+  } finally { stub.restore(); }
+});
+
+test("录音文件识别：超预算必须抛 TIMEOUT 让 provider 链回退，绝不无限等", async () => {
+  // submit 成功，此后永远「处理中」—— 模拟官方说的"高峰期可能延迟"。
+  const stub = stubSequenceFetch([
+    () => doubaoTextResponse("20000000"),   // submit
+    () => doubaoTextResponse("20000001"),   // 之后一律处理中
+  ]);
+  try {
+    const startedAt = Date.now();
+    await assert.rejects(
+      () => recognizeDoubaoFileAudio(
+        { audioUrl: "https://cdn.example/a.mp3" },
+        { ...FILE_ASR_CONFIG, doubaoFileAsrBudgetMs: 900, doubaoFileAsrPollIntervalMs: 200 },
+        { logger: { info(){}, warn(){}, error(){} } },
+      ),
+      error => error.code === "DOUBAO_ASR_TIMEOUT",
+    );
+    assert.ok(Date.now() - startedAt < 5000, "必须在预算附近收手，不能挂死");
+    assert.ok(stub.calls.length > 1, "应当真的轮询过几次才超时");
+  } finally { stub.restore(); }
+});
+
+test("录音文件识别：query 报错要带出上游状态码，不要吞成泛化失败", async () => {
+  const stub = stubSequenceFetch([
+    () => doubaoTextResponse("20000000"),
+    () => doubaoTextResponse("45000002"),   // 空音频
+  ]);
+  try {
+    await assert.rejects(
+      () => recognizeDoubaoFileAudio({ audioUrl: "https://cdn.example/a.mp3" }, FILE_ASR_CONFIG, { logger: { info(){}, warn(){}, error(){} } }),
+      error => error.code === "DOUBAO_ASR_FAILED" && error.details?.code === "45000002",
+    );
+  } finally { stub.restore(); }
+});
+
+test("录音文件识别：缺少 audioUrl 直接拒绝（这条通道只接受 URL，不接受 base64）", async () => {
+  await assert.rejects(
+    () => recognizeDoubaoFileAudio({ audioDataBase64: "AAAA" }, FILE_ASR_CONFIG, { logger: { info(){}, warn(){}, error(){} } }),
+    error => error.code === "ASR_INPUT_MISSING",
+  );
+});
+
+// ── 录音文件识别的两源重试（2026-09-28）──────────────────────────────────
+// 实测同一条抖音视频的 music(mp3) 与 video 直链里是**同一段音频**，互为等价来源。
+// 一个源为空/损坏时换另一个源重试成本接近零，远低于下整条视频用 ffmpeg 重抽。
+// 这里钉住"换源"这件事真的发生，以及全失败时不要把原因丢掉。
+
+test("录音文件识别：第一源失败会自动换第二源（换源重试，不是降级）", async () => {
+  // 源1 → submit 报错（空音频 45000002）；源2 → submit + query 成功。
+  // ⚠️ 用 URL 定位调用，不用下标：submit 自身也可能重试，下标会错位。
+  const stub = stubSequenceFetch([
+    ({ body }) => (String(body?.audio?.url || "").includes("music")
+      ? doubaoTextResponse("45000002")
+      : doubaoTextResponse("20000000")),
+    () => doubaoTextResponse("20000000", "第二个音源识别出的文案"),
+  ]);
+  try {
+    const result = await recognizeDoubaoFileAudio({
+      audioSources: [
+        { url: "https://cdn.example/music.mp3", format: "mp3", kind: "music" },
+        { url: "https://cdn.example/video.mp4", format: "m4a", kind: "video" },
+      ],
+    }, { ...FILE_ASR_CONFIG, apiRetryAttempts: 0 }, { logger: { info(){}, warn(){}, error(){} } });
+
+    assert.equal(result.text, "第二个音源识别出的文案");
+    assert.equal(result.sourceKind, "video", "必须如实标出最终用的是哪个音源");
+
+    const submitters = stub.calls.filter(call => call.body?.audio?.url);
+    assert.equal(submitters.length, 2, "两个音源各 submit 一次（第一源失败后换源）");
+    assert.equal(submitters[0].body.audio.url, "https://cdn.example/music.mp3");
+    // 第二个音源按 m4a 报（官方白名单内），而不是未文档化的 mp4
+    assert.equal(submitters[1].body.audio.url, "https://cdn.example/video.mp4");
+    assert.equal(submitters[1].body.audio.format, "m4a");
+  } finally { stub.restore(); }
+});
+
+test("录音文件识别：所有音源都失败时，每个音源的原因都要带出来", async () => {
+  const stub = stubSequenceFetch([() => doubaoTextResponse("45000002")]);
+  try {
+    await assert.rejects(
+      () => recognizeDoubaoFileAudio({
+        audioSources: [
+          { url: "https://cdn.example/a.mp3", format: "mp3", kind: "music" },
+          { url: "https://cdn.example/b.mp4", format: "m4a", kind: "video" },
+        ],
+      }, FILE_ASR_CONFIG, { logger: { info(){}, warn(){}, error(){} } }),
+      error => {
+        // 只报最后一个源的话，排查时分不清"两个源都空"还是"第一个源文件坏了"
+        assert.equal(error.details?.failures?.length, 2, "两个源的失败原因都要在 details 里");
+        assert.deepEqual(error.details.failures.map(f => f.kind), ["music", "video"]);
+        return error.code === "DOUBAO_ASR_FAILED";
+      },
+    );
+  } finally { stub.restore(); }
+});
+
+test("录音文件识别：单源调用保持兼容（只给 audioUrl 时就是一次普通调用）", async () => {
+  const stub = stubSequenceFetch([
+    () => doubaoTextResponse("20000000"),
+    () => doubaoTextResponse("20000000", "单源结果"),
+  ]);
+  try {
+    const result = await recognizeDoubaoFileAudio(
+      { audioUrl: "https://cdn.example/a.mp3", audioFormat: "mp3" },
+      FILE_ASR_CONFIG,
+      { logger: { info(){}, warn(){}, error(){} } },
+    );
+    assert.equal(result.text, "单源结果");
+    assert.equal(stub.calls.length, 2, "单源只需 submit + 1 次 query");
+  } finally { stub.restore(); }
+});
+
+// ── 流断开不得打死进程（2026-09-28 用户实测的真实事故）─────────────────────
+// 事故现场：媒体流在对端断流时抛 unhandled 'error'，**整个 Node 进程退出**，
+// 前端只看到 `socket hang up` 与长时间无结果（终端是 `Failed running 'src/index.js'`，
+// 堆栈为 undici `Fetch.onAborted` / `UND_ERR_SOCKET: other side closed`）。
+//
+// 根因（读代码定位，不是推测）：`Readable.fromWeb(response.body)` 在
+// `prepareVideoInput` / `extractAudioFromFetchedMedia` 里建好之后，消费侧的
+// `inputStream.on("error", ...)` 要等 ffmpeg 启动才挂上。**这段窗口里断流就没人接**，
+// 于是 'error' 变成 unhandled → 进程退出。
+//
+// 🔴 这一节测的是**修复机制本身**：Node 里"一个 ERR 的流只要有 error 监听就不会
+//    打死进程"。这不是废话断言 —— 去掉 `guardStreamErrors`（变异测试）后，
+//    下面第一条会直接让**测试进程崩溃**，而不是断言失败。
+
+/** 造一个「已建好、随后出错」的流，等价于 CDN 中途断流。 */
+const erroringStream = () => {
+  const stream = new Readable({
+    read() {
+      queueMicrotask(() => {
+        stream.destroy(Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" }));
+      });
+    },
+  });
+  return stream;
+};
+
+test("★ 有 error 监听的流不会打死进程（修复的机制本身）", async () => {
+  const seen = [];
+  const stream = erroringStream();
+  stream.on("error", error => seen.push(error?.code || error?.message));
+  // 消费掉数据侧，模拟 pipe 到下游
+  stream.resume();
+  await new Promise(resolve => setTimeout(resolve, 30));
+  assert.deepEqual(seen, ["UND_ERR_SOCKET"], "错误必须被监听到（而不是抛给进程）");
+});
+
+test("★★ 还原事故现场：流建好后完全没人碰它，也不能打死进程", async () => {
+  // 这条最贴近真实事故：`prepareVideoInput` 返回流之后，ffmpeg 还没起来挂监听，
+  // 此时对端断流。**只要没有 error 监听，Node 就会把它当 unhandled 'error' 抛出。**
+  // 没有兜底时，这条测试会让整个测试进程退出（不是断言失败）——变异测试已验证。
+  const { guardStreamErrors } = await import("../api/_lib/contentAgent/providers.js");
+  const stream = guardStreamErrors(erroringStream(), { logger: { info(){}, warn(){}, error(){} }, label: "test:untouched" });
+  // ⚠️ 刻意不 resume、不 pipe、不挂任何监听、不 await 它 —— 纯"放着"。
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.ok(true, "进程还活着 = 兜底生效");
+});
+
+test("★ guardStreamErrors 让「无人接管的错误流」不再打死进程", async () => {
+  const { guardStreamErrors } = await import("../api/_lib/contentAgent/providers.js");
+  const warnings = [];
+  const logger = { info(){}, warn: (event) => warnings.push(event), error(){} };
+
+  const stream = guardStreamErrors(erroringStream(), { logger, label: "test:media" });
+  stream.resume();
+  await new Promise(resolve => setTimeout(resolve, 30));
+
+  assert.deepEqual(warnings, ["stream.error_guarded"], "兜底要留一条日志，便于定位断流");
+  assert.ok(true, "跑完这段而进程没退，就是核心断言");
+});
+
+test("guardStreamErrors 对 null / 非流对象要安全（不能因为它把调用方搞崩）", async () => {
+  const { guardStreamErrors } = await import("../api/_lib/contentAgent/providers.js");
+  assert.equal(guardStreamErrors(null), null);
+  assert.equal(guardStreamErrors(undefined), undefined);
+  const notStream = { foo: 1 };
+  assert.equal(guardStreamErrors(notStream), notStream, "没有 .on 的原样返回");
+});
+
+test("guardStreamErrors 不吞错误：消费侧直接挂的监听照样能感知失败", async () => {
+  const logger = { info(){}, warn(){}, error(){} };
+  const consumed = [];
+
+  // ⚠️ 实测澄清了一件事：Node 的 `pipe()` **不会**把源流的 error 转发给下游
+  //    （出错时它只调 `dest.end()`，不 emit error）。所以失败感知靠的是消费侧
+  //    在**同一个流**上直接挂的监听 —— `extractAudioFromStream` 里的
+  //    `inputStream.on("error", ...)` 正是这么做的（然后 kill ffmpeg 并 reject）。
+  //    兜底监听因此**不会**把失败变成"静默成功"：两个监听都会收到。
+  const source = guardStreamErrors(erroringStream(), { logger, label: "test:consume" });
+  source.on("error", error => consumed.push(error?.code || error?.message));
+  source.resume();
+  await new Promise(resolve => setTimeout(resolve, 30));
+
+  assert.deepEqual(consumed, ["UND_ERR_SOCKET"], "消费侧必须照样收到错误，不能被兜底吞掉");
 });

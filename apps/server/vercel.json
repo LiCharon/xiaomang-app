@@ -60,6 +60,15 @@
     "api/account-plan-reports/index.ts": {
       "maxDuration": 30
     },
+    "api/agent/video-analysis.ts": {
+      "maxDuration": 300
+    },
+    "api/video-analysis-reports/index.ts": {
+      "maxDuration": 30
+    },
+    "api/review/workbook.ts": {
+      "maxDuration": 30
+    },
     "api/adhoc-analyses/index.ts": {
       "maxDuration": 30
     },

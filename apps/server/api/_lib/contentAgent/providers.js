@@ -27,6 +27,7 @@ import {
   OPENING_HOOK_PROMPT,
   CREATIVE_ENDING_HOOKS_PROMPT,
   CREATIVE_GOLD_THREE_SECONDS_PROMPT,
+  CREATIVE_TITLE_PROMPT,
   SCRIPT_REWRITE_PROMPT,
   TITLE_PROMPT,
 } from "./prompts.js";
@@ -37,10 +38,71 @@ import { buildEndingHooksInput } from "../endingHooks.js";
 import { buildBenchmarkProfileInput } from "../benchmarkProfile.js";
 import { buildAccountPlanInput } from "../accountPlan.js";
 import { GOLD_THREE_SECOND_TYPE_LABELS } from "../goldThreeSeconds.js";
+import {
+  TITLE_TYPE_KEYS,
+  TITLE_TYPE_LABELS,
+  formatTitleCandidatesAsText,
+} from "../titleLibrary.js";
 import { ENDING_HOOK_TYPE_LABELS } from "../endingHooks.js";
 import { CREATIVE_CANDIDATE_COUNT, formatAdaptationForPrompt } from "../topicCreativeAdaptation.js";
 
 const transcriptCache = new Map();
+
+/**
+ * TikHub 解析结果缓存（2026-09-24）。
+ *
+ * 为什么需要：`resolveTikHubVideo` 原本**完全没有缓存**，而它每解析一条要
+ * 3.4~4.7s（实测，见 goldThreeSecondTranscripts.js 顶部的数字）—— 比裁剪后的
+ * 转写本身（~1.7s）还贵一倍多。2.2 黄金三秒与 2.3 结尾钩子跑的是**同一批视频、
+ * 同一个 link**；转写片段虽然不同（head / tail，不能共用），但「视频在哪、直链是
+ * 什么」这一步是纯重复劳动：不缓存就要把解析成本付两遍，外加 TikHub 的额度。
+ *
+ * 缓存的是**一次解析的全部产物**，2.2 / 2.3 / 二创都要用：
+ *   - `videoUrl`         → 转写要下载 / 作为 ffmpeg 输入
+ *   - `musicUrl`         → `tikhub-music` provider 直接用它，比 ffmpeg 快约 12 倍
+ *   - `title` / `cover`  → 日志与展示
+ *
+ * ⚠️ 三条必须守住的纪律：
+ *   1. **只缓存成功**。失败（`VIDEO_URL_MISSING` 等）立刻删掉，让下一批还能重试 ——
+ *      把一次网络抖动缓存成 30 分钟的「这条视频解析不出来」是最难查的那类 bug。
+ *   2. **存的是 Promise，不是解析完的值**。同一批里预取窗口会并发请求同一个 link，
+ *      存值挡不住这种并发（两个请求都 miss、再各打一次 TikHub）；存 Promise 才能
+ *      把并发收敛成一次真实调用。
+ *   3. **`warnings` 不进缓存**：那是这次请求的日志/遥测，不是视频的属性。
+ *      （顺带说明：`resolveTikHubVideo` 返回的 `warnings` 字段目前没有任何调用方
+ *       消费 —— 失败路径是用 `AgentError.details` 带出去的，所以这里不再往外传。）
+ *
+ * TTL 刻意比转写缓存短：转写缓存 1 小时（文本不变），而这里的 CDN 直链会过期，
+ * 拿到过期直链会让下载 403/404。默认 30 分钟。
+ */
+const resolveCache = new Map();
+
+/** 键里必须带 platform：同一条链接在不同平台下解析出的是不同结果，不能混用。 */
+const resolveCacheKey = (shareLink, platform) => `${platform}::${String(shareLink ?? "").trim()}`;
+
+/** 命中时重新打 `cached`，避免把上一次的标记嵌套成 `cached: { cached: true }`。 */
+const withoutCacheFlag = value => {
+  if (!value || typeof value !== "object" || !("cached" in value)) return value;
+  const { cached: _ignored, ...rest } = value;
+  return rest;
+};
+
+/** 超出容量时按插入顺序丢最旧的（Map 保序）。 */
+const trimResolveCache = max => {
+  while (resolveCache.size > max) {
+    const oldest = resolveCache.keys().next();
+    if (oldest.done) break;
+    resolveCache.delete(oldest.value);
+  }
+};
+
+/**
+ * 清空解析缓存。给测试用：同一进程里多条用例共享这个 Map，
+ * 不清理会让「后一条用例」直接命中「前一条」造的数据，出现莫名其妙的串味。
+ */
+export const clearResolveCacheForTests = () => {
+  resolveCache.clear();
+};
 
 // 视频号 Isaac64 加密仅作用于文件前 KEYSTREAM_SIZE 字节，其余为明文。
 // KEYSTREAM_SIZE 同时也是密钥流长度（见 vendor/wechatKeystream.mjs）。
@@ -439,59 +501,93 @@ export const buildTikHubVideoAttempts = (shareLink, platform, config) => {
 export const resolveTikHubVideo = async (shareLink, config, options = {}) => {
   const logger = options.logger;
   const platform = options.platform === "tiktok" ? "tiktok" : "douyin";
-  let meta = {
-    shareLink,
-    platform,
-    awemeId: parseAwemeIdFromShareLink(shareLink),
-    title: "",
-    cover: "",
-    videoUrl: "",
-    videoUrls: [],
-    raw: null,
-  };
-  const warnings = [];
 
-  const attempts = buildTikHubVideoAttempts(shareLink, platform, config);
-
-  for (const attempt of attempts) {
-    try {
-      const payload = await fetchTikHub(attempt.path, attempt.params, config, logger);
-      meta = mergeMeta(meta, extractVideoMeta(payload, shareLink), { preferVideo: attempt.preferVideo });
-      // 拿到完整信息（标题 + 封面 + 可用视频 URL）即提前结束，避免无谓的串行调用。
-      // 旧的 break 条件要求 attempt.preferVideo，是因为旧列表里有专门拿高清直链的端点；
-      // 现在该端点已移除（返回纯视频流对转写有害），故改为信息完整即 break。
-      if (meta.title && meta.cover && meta.videoUrl) break;
-    } catch (error) {
-      warnings.push({
-        provider: "tikhub",
-        step: attempt.path,
-        message: error instanceof Error ? error.message : "TikHub request failed",
-      });
+  // ── 解析缓存 ──────────────────────────────────────────────────────────
+  // 2.2 与 2.3 跑同一批视频的同一个 link，解析（3.4~4.7s/条）是纯重复劳动。
+  // 详见 resolveCache 的注释：只缓存成功、存 Promise（收敛并发）、不缓存 warnings。
+  const cacheKey = resolveCacheKey(shareLink, platform);
+  const ttlMs = Math.max(0, Number(config?.resolveCacheTtlMs) || 0);
+  const maxEntries = Math.max(1, Number(config?.resolveCacheMaxEntries) || 500);
+  if (ttlMs > 0) {
+    const entry = resolveCache.get(cacheKey);
+    if (entry) {
+      if (Date.now() - entry.createdAt < ttlMs) {
+        // ⚠️ 返回**同一个包裹对象**，不是缓存里存的那个：调用方（例如
+        // transcribeVideo 的 provider 循环）可能改动 meta，不能让它污染缓存。
+        const value = await entry.promise;
+        return { ...withoutCacheFlag(value), cached: true };
+      }
+      // 过期：先删掉再重新解析，避免下面 await 期间的并发又命中了旧条目。
+      resolveCache.delete(cacheKey);
     }
   }
 
-  if (!meta.videoUrl) {
-    throw new AgentError("Unable to resolve playable video URL from TikHub", {
-      code: "VIDEO_URL_MISSING",
-      details: warnings,
+  const resolving = (async () => {
+    let meta = {
+      shareLink,
+      platform,
+      awemeId: parseAwemeIdFromShareLink(shareLink),
+      title: "",
+      cover: "",
+      videoUrl: "",
+      videoUrls: [],
+      raw: null,
+    };
+    const warnings = [];
+
+    const attempts = buildTikHubVideoAttempts(shareLink, platform, config);
+
+    for (const attempt of attempts) {
+      try {
+        const payload = await fetchTikHub(attempt.path, attempt.params, config, logger);
+        meta = mergeMeta(meta, extractVideoMeta(payload, shareLink), { preferVideo: attempt.preferVideo });
+        // 拿到完整信息（标题 + 封面 + 可用视频 URL）即提前结束，避免无谓的串行调用。
+        // 旧的 break 条件要求 attempt.preferVideo，是因为旧列表里有专门拿高清直链的端点；
+        // 现在该端点已移除（返回纯视频流对转写有害），故改为信息完整即 break。
+        if (meta.title && meta.cover && meta.videoUrl) break;
+      } catch (error) {
+        warnings.push({
+          provider: "tikhub",
+          step: attempt.path,
+          message: error instanceof Error ? error.message : "TikHub request failed",
+        });
+      }
+    }
+
+    if (!meta.videoUrl) {
+      throw new AgentError("Unable to resolve playable video URL from TikHub", {
+        code: "VIDEO_URL_MISSING",
+        details: warnings,
+      });
+    }
+
+    logger?.info("tikhub.video.resolved", {
+      provider: "tikhub",
+      title: meta.title || "未识别标题",
+      awemeId: meta.awemeId,
+      candidateCount: Array.isArray(meta.videoUrls) ? meta.videoUrls.length : 0,
+      ...describeVideoUrlForDiagnostics(meta.videoUrl),
     });
+
+    return {
+      ...meta,
+      sourceProvider: "tikhub",
+      title: meta.title || "未识别标题",
+      cover: meta.cover || "",
+    };
+  })();
+
+  if (ttlMs > 0) {
+    resolveCache.set(cacheKey, { createdAt: Date.now(), promise: resolving });
+    trimResolveCache(maxEntries);
   }
-
-  logger?.info("tikhub.video.resolved", {
-    provider: "tikhub",
-    title: meta.title || "未识别标题",
-    awemeId: meta.awemeId,
-    candidateCount: Array.isArray(meta.videoUrls) ? meta.videoUrls.length : 0,
-    ...describeVideoUrlForDiagnostics(meta.videoUrl),
-  });
-
-  return {
-    ...meta,
-    sourceProvider: "tikhub",
-    title: meta.title || "未识别标题",
-    cover: meta.cover || "",
-    warnings,
-  };
+  try {
+    return await resolving;
+  } catch (error) {
+    // 失败不进缓存：一次抖动不该被记住 30 分钟。
+    if (resolveCache.get(cacheKey)?.promise === resolving) resolveCache.delete(cacheKey);
+    throw error;
+  }
 };
 
 const buildDoubaoAsrHeaders = (config, options = {}) => {
@@ -541,6 +637,310 @@ const isRetryableDoubaoAsrStatus = (statusCode) => {
 };
 
 const normalizeAudioFormat = value => String(value || "mp3").toLowerCase() === "wav" ? "wav" : "mp3";
+
+/**
+ * 录音文件识别 2.0 的格式白名单（官方口径）：`wav / mp3 / ogg / spx / amr / aac / m4a`。
+ *
+ * 🔴 这里**不能复用上面的 `normalizeAudioFormat`**：那个只认 wav/mp3，会把 `m4a`
+ *    **静默改写成 mp3**（实测踩到过：日志里 video 源报的 format 一直是 mp3，
+ *    排查了三轮才发现是归一化改的值）。这类"悄悄改一个值、不报错"的处理，
+ *    最容易让人误判成"服务端不支持这个格式"。
+ */
+const FILE_ASR_FORMATS = new Set(["wav", "mp3", "ogg", "spx", "amr", "aac", "m4a"]);
+const normalizeFileAsrFormat = value => {
+  const text = String(value || "").trim().toLowerCase();
+  return FILE_ASR_FORMATS.has(text) ? text : "mp3";
+};
+
+/**
+ * 读 API 状态码。规范位置是响应头 `X-Api-Status-Code`，
+ * 但兼容响应体里也带一份的网关变体 —— 只认响应头的话，那种变体会让整条通道
+ * 每次都误判成"submit failed"，而错误信息还看不出是状态码读错了。
+ */
+const readDoubaoApiCode = (response, data) => (
+  String(response?.headers?.get?.("X-Api-Status-Code") || data?.code || data?.status_code || "").trim()
+);
+
+/**
+ * 给「豆包录音文件识别 2.0」挑出**所有**可直接交给服务端去拉的音频源，按优先级排序。
+ *
+ * 为什么返回数组而不是单个：实测同一条抖音视频的 `music.play_url`（mp3）与视频直链
+ * （mp4）里是**同一段音频**（308 vs 305 字，时长 57.2s vs 57.0s），互为等价来源。
+ * 一个源返回空（静音 / 被截断 / 文件异常）时**换另一个源重试成本接近零**；
+ * 而换 ffmpeg 要下整条视频、抽出**同一段音频**（最长 45 秒），结果大概率一样
+ * —— 见 `recognizeDoubaoFileAudio` 顶部的说明。
+ *
+ * 顺序：music(mp3) 优先 —— 纯音频、体积小、服务端无需解封装（实测 8.8s vs 14.0s）。
+ * 视频直链声明成 `m4a`（落在官方白名单内），而不是未文档化的 `mp4`；
+ * 实测服务端按内容嗅探、不看这个字段，选文档内写法只是为了不赌。
+ *
+ * ⚠️ 只接受 http(s)：视频号那条路 `videoUrl` 为 null（走本地解密流），本地文件路径
+ *    也没法给远端拉 —— 这两种情况如实返回空数组，让 provider 链跳过这一条。
+ */
+const pickDoubaoFileAudioSources = (videoMeta = {}) => {
+  const asHttpUrl = value => {
+    const text = String(value || "").trim();
+    return /^https?:\/\//i.test(text) ? text : "";
+  };
+  const sources = [];
+  const music = asHttpUrl(videoMeta.musicUrl);
+  if (music) sources.push({ url: music, format: "mp3", kind: "music" });
+  const video = asHttpUrl(videoMeta.videoUrl);
+  if (video && video !== music) {
+    const lower = video.split("?")[0].toLowerCase();
+    const format = lower.endsWith(".mp3") ? "mp3" : lower.endsWith(".wav") ? "wav" : "m4a";
+    sources.push({ url: video, format, kind: "video" });
+  }
+  return sources;
+};
+
+/**
+ * 豆包**录音文件识别模型 2.0**（异步 submit + 轮询 query），2026-09-28 接入。
+ *
+ * 与 `recognizeDoubaoAudio`（flash 同步）的根本差别：**这条通道不接受 base64，
+ * 只接受一个音频 URL**，服务端自己去拉。好处是**完全不需要本地 ffmpeg** ——
+ * 直接把 CDN 上的 mp3（`music.play_url`）或 mp4 地址交过去即可。
+ * 实测：一条 57 秒的视频，submit 660ms + 轮询到结果共约 10 秒。
+ *
+ * ── 协议要点（都是实测出来的，官方文档没写全）─────────────────────────
+ *   ① **`task_id` 就是你自己传的 `X-Api-Request-Id`**。submit 的响应体是 `{}`，
+ *      不返回 task_id；query 时把同一个 UUID 放在同一个头里带过去即可。
+ *      所以这个 UUID 必须由调用方生成并保存，不能每次重新随机。
+ *   ② query 的状态在 **响应头** `X-Api-Status-Code`，不在响应体：
+ *        `20000001` = 处理中（msg `[Processing in progress]`）
+ *        `20000000` = 成功，响应体里是 `{"audio_info":{...},"result":{"text":"..."}}`
+ *   ③ 成功时的响应体形状与 flash **完全一致**（`result.text`），所以
+ *      `extractAsrTranscript` 那套解析可以原样复用。
+ *
+ * 🔴 这是**异步任务**，官方口径「通常 3 小时内完成」。延迟不可控是这条通道最大的
+ * 风险，所以这里必须有轮询上限与总预算：**超时就算这个 provider 失败**，
+ * 交给 provider 链回退到别的方案 —— 绝不能让一条视频把整批挂死。
+ */
+const recognizeDoubaoFileAudioOnce = async ({ audioUrl, audioFormat = "mp3" } = {}, config, options = {}) => {
+  const logger = options.logger;
+  const url = String(audioUrl || "").trim();
+  if (!url) {
+    throw new AgentError("audioUrl is required for Doubao file ASR", {
+      code: "ASR_INPUT_MISSING",
+      status: 422,
+    });
+  }
+
+  const normalizedAudioFormat = normalizeFileAsrFormat(audioFormat);
+  // 这个 UUID 同时是 task_id：submit 与后续每一次 query 必须用同一个。
+  const requestId = randomUUID();
+  const headers = {
+    ...buildDoubaoAsrHeaders(config, { sequence: "-1", requestId }),
+    "X-Api-Resource-Id": config.doubaoFileAsrResourceId,
+  };
+  const budgetMs = Math.max(1000, Number(config.doubaoFileAsrBudgetMs) || 120000);
+  const pollIntervalMs = Math.max(200, Number(config.doubaoFileAsrPollIntervalMs) || 2000);
+  const startedAt = Date.now();
+  const logFields = {
+    requestId,
+    audioFormat: normalizedAudioFormat,
+    resourceId: config.doubaoFileAsrResourceId,
+    budgetMs,
+  };
+
+  // ① submit
+  const submit = await fetchJson(config.doubaoFileAsrSubmitUrl, {
+    method: "POST",
+    timeoutMs: config.requestTimeoutMs,
+    retries: config.apiRetryAttempts,
+    retryBaseDelayMs: config.apiRetryBaseDelayMs,
+    logger,
+    interfaceName: "doubao:asr.file.submit",
+    logFields,
+    headers,
+    body: JSON.stringify({
+      user: { uid: getDoubaoUid(config) },
+      audio: { url, format: normalizedAudioFormat },
+      request: { model_name: "bigmodel" },
+    }),
+  });
+  const submitCode = readDoubaoApiCode(submit.response, submit.data);
+  const submitMessage = submit.response.headers.get("X-Api-Message");
+  if ((submitCode && submitCode !== "20000000") || !submit.response.ok) {
+    throw new AgentError(`Doubao file ASR submit failed with code ${submitCode || submit.response.status}`, {
+      code: "DOUBAO_ASR_FAILED",
+      status: submit.response.status,
+      details: { submitCode, submitMessage, phase: "submit", requestId },
+    });
+  }
+
+  // ② 轮询 query
+  for (;;) {
+    if (Date.now() - startedAt >= budgetMs) {
+      // 超时不是"失败得莫名其妙"，而是这条通道的已知特性：如实报出来，让上层回退。
+      const error = new AgentError(`Doubao file ASR did not finish within ${budgetMs}ms`, {
+        code: "DOUBAO_ASR_TIMEOUT",
+        details: { requestId, elapsedMs: Date.now() - startedAt, budgetMs },
+      });
+      logger?.warn("external.request.timeout", {
+        interface: "doubao:asr.file.query",
+        endpoint: config.doubaoFileAsrQueryUrl,
+        error: error.message,
+        code: error.code,
+        ...logFields,
+        elapsedMs: Date.now() - startedAt,
+      });
+      throw error;
+    }
+
+    await sleep(pollIntervalMs);
+    const query = await fetchJson(config.doubaoFileAsrQueryUrl, {
+      method: "POST",
+      timeoutMs: config.requestTimeoutMs,
+      retries: 0,
+      logger,
+      interfaceName: "doubao:asr.file.query",
+      logFields: { ...logFields, elapsedMs: Date.now() - startedAt },
+      headers,
+      body: JSON.stringify({}),
+    });
+    const code = readDoubaoApiCode(query.response, query.data);
+    const message = query.response.headers.get("X-Api-Message");
+    const logid = query.response.headers.get("X-Tt-Logid");
+
+    if (code === "20000001") continue;   // 处理中
+
+    if (code !== "20000000" || !query.response.ok) {
+      logger?.error("external.request.error", {
+        interface: "doubao:asr.file.query",
+        endpoint: config.doubaoFileAsrQueryUrl,
+        error: `Doubao file ASR query failed with code ${code}`,
+        code: "DOUBAO_ASR_FAILED",
+        status: query.response.status,
+        details: { code, message, logid, requestId },
+      });
+      throw new AgentError(`Doubao file ASR query failed with code ${code}`, {
+        code: "DOUBAO_ASR_FAILED",
+        status: query.response.status,
+        details: { code, message, logid, requestId, phase: "query" },
+      });
+    }
+
+    const transcript = extractAsrTranscript(query.data);
+    if (!transcript) {
+      throw new AgentError("Doubao file ASR returned empty transcript", {
+        code: "DOUBAO_ASR_EMPTY",
+        status: query.response.status,
+        details: { code, message, logid, requestId, data: query.data },
+      });
+    }
+
+    logger?.info("doubao.asr.result", {
+      interface: "doubao:asr.file.query",
+      status: query.response.status,
+      apiStatusCode: code,
+      apiMessage: message,
+      logid,
+      requestId,
+      transcriptLength: transcript.length,
+      audioFormat: normalizedAudioFormat,
+      elapsedMs: Date.now() - startedAt,
+    });
+
+    return {
+      text: transcript,
+      utterances: extractAsrUtterances(query.data),
+      logid,
+      duration: extractAsrDuration(query.data),
+      taskId: requestId,
+    };
+  }
+};
+
+/**
+ * 录音文件识别的对外入口：**同一条视频的两个等价音源依次尝试**。
+ *
+ * 🔴 为什么要有这层（2026-09-28 实测得出，不是设计洁癖）：
+ *   同一条抖音视频，`music.play_url`（mp3）与视频直链（mp4）里是**同一段音频** ——
+ *   实测两条分别转写出 308 / 305 字，逐句几乎一致（只差 BKR5/BK25 这类同音字），
+ *   时长 57.2s / 57.0s。所以它们互为等价来源，**换源重试不是"降级"，是第二次尝试**。
+ *
+ * 这一步的价值在于：ASR 返回空的原因**可能只是这一个源不好**（该源静音/被截断/
+ * 文件异常），而另一个源完全正常。换 URL 的成本是**零额外下载**，远低于
+ * 下整条视频用 ffmpeg 重抽音频（实测最长 45 秒）—— 而 ffmpeg 抽出来还是同一段音频，
+ * 结果大概率一样。
+ *
+ * 关于 `format`：第二个源声明成 **`m4a`**（在官方白名单 wav/mp3/ogg/spx/amr/aac/m4a 内），
+ * 而不是未文档化的 `mp4`。实测服务端**按内容嗅探、根本不看这个字段**：
+ * 同一个 mp4 URL 分别声明 mp4 / m4a / aac / mp3 四种格式**全部成功**，且字数与时长完全一致。
+ * 所以这里选文档内的写法，失败模式也是良性的（报错 → provider 链照常回退）。
+ */
+export const recognizeDoubaoFileAudio = async ({ audioSources = [], audioUrl = "", audioFormat = "mp3" } = {}, config, options = {}) => {
+  const logger = options.logger;
+  // 兼容单源调用：只给 audioUrl 时就是一次普通调用（早期调用方与测试这么用）。
+  const sources = (Array.isArray(audioSources) && audioSources.length > 0
+    ? audioSources
+    : [{ url: audioUrl, format: audioFormat, kind: "single" }]
+  ).filter(source => String(source?.url || "").trim());
+  if (sources.length === 0) {
+    throw new AgentError("audioUrl is required for Doubao file ASR", { code: "ASR_INPUT_MISSING", status: 422 });
+  }
+
+  const failures = [];
+  let lastError = null;
+  for (let index = 0; index < sources.length; index += 1) {
+    const source = sources[index];
+    try {
+      const result = await recognizeDoubaoFileAudioOnce(
+        // ⚠️ format 必须在这里就定下来：`source.format || audioFormat` 在外层 audioFormat
+        //    未传时会得到 `undefined`，而内层的 `audioFormat = "mp3"` **默认值**会把它
+        //    变成 "mp3" —— 于是第二个音源声明的 m4a 被静默改写成 mp3。
+        //    （实测踩到过：日志里 video 源报的 format 是 mp3，而不是 m4a。）
+        {
+          audioUrl: source.url,
+          audioFormat: String(source.format || audioFormat || "mp3").toLowerCase(),
+        },
+        config,
+        options,
+      );
+      if (index > 0) {
+        logger?.info("doubao.file_asr.source_retry_ok", {
+          kind: source.kind || `source${index + 1}`,
+          attempt: index + 1,
+          total: sources.length,
+        });
+      }
+      return { ...result, sourceKind: source.kind || `source${index + 1}` };
+    } catch (error) {
+      lastError = error;
+      failures.push({
+        kind: source.kind || `source${index + 1}`,
+        code: error?.code,
+        message: error instanceof Error ? error.message : "source failed",
+      });
+      logger?.warn("doubao.file_asr.source_failed", {
+        kind: source.kind || `source${index + 1}`,
+        attempt: index + 1,
+        total: sources.length,
+        code: error?.code,
+        error: error instanceof Error ? error.message : "source failed",
+        willRetryNextSource: index + 1 < sources.length,
+      });
+      // 参数类错误（没给 URL 之类）换源也没用，直接抛。
+      if (error?.code === "ASR_INPUT_MISSING") throw error;
+    }
+  }
+
+  // 🔴 单源调用**原样抛出内层错误**：调用方依赖 `details.phase`、上游状态码这些内层
+  //    字段定位问题；包一层"所有音源都失败"反而把最有用的信息盖掉（实测会盖掉
+  //    `details.code = 45000002` 这类上游错误码）。
+  if (sources.length === 1 && lastError) throw lastError;
+
+  // 多源全部失败：把每个源的原因一起带出去，别只报最后一个 —— 排查时要知道
+  // 是"两个源都空"还是"第一个源文件坏了"。
+  const wrapper = new AgentError("Doubao file ASR failed for every audio source", {
+    code: failures.some(item => item.code === "DOUBAO_ASR_TIMEOUT") ? "DOUBAO_ASR_TIMEOUT" : "DOUBAO_ASR_FAILED",
+    details: { failures },
+  });
+  // 保留最后一个源的内层 details（上游状态码 / logid 等），否则多源失败时更难查。
+  if (lastError?.details) wrapper.details.lastSource = lastError.details;
+  throw wrapper;
+};
 
 export const recognizeDoubaoAudio = async ({ audioDataBase64, audioFormat = "mp3", audioBytes = 0 }, config, options = {}) => {
   if (!audioDataBase64) {
@@ -796,6 +1196,45 @@ const toNodeReadable = (body) => {
   return Readable.from([]);
 };
 
+/**
+ * 给流挂一个**兜底 error 监听**。
+ *
+ * 🔴 这是为了修一个会把整个 Node 进程打死的问题（2026-09-28 用户实测）：
+ *
+ *   视频号媒体走「下载 → 解密 transform → 喂 ffmpeg stdin」。`fetchMediaResponse` 的
+ *   try/catch **只覆盖"拿到响应头"那一段** —— 头一到就 `return`，之后流式传输期间
+ *   对端断流（CDN 很常见，堆栈里是 `UND_ERR_SOCKET: other side closed`，已读 3.4MB），
+ *   错误就发生在返回**之后**，那个 catch 管不着。
+ *
+ *   而 `Readable.fromWeb(response.body)` 包出来的流一旦出错且当时**没有** error 监听，
+ *   Node 会把它当 unhandled 'error' event 直接抛出 → 进程退出。
+ *   实测表现：`Failed running 'src/index.js'` + 前端 `socket hang up` 长时间无结果。
+ *
+ *   窗口期真实存在：流在 `prepareVideoInput` 里创建（1423 行），而消费侧
+ *   `inputStream.on("error", ...)` 要等 ffmpeg 启动后才挂上 —— 头刚拿到、ffmpeg
+ *   还没起来时对端断流，就落在这个窗口里。
+ *
+ * ⚠️ 有了兜底监听**不会**吞掉错误，消费侧照样能感知失败 —— 但机制要说准：
+ *    Node 的 `pipe()` **不转发**源流的 error（出错时只调 `dest.end()`，不 emit error）。
+ *    真正让 ffmpeg 链路能感知失败的是 `extractAudioFromStream` 里在**同一个流**上
+ *    直接挂的 `inputStream.on("error", ...)`（它负责 kill ffmpeg 并 reject）。
+ *    多个监听互不影响，所以兜底只负责**不让进程死** + 留一条可定位的日志。
+ */
+export const guardStreamErrors = (stream, { logger, label = "media stream", logFields = {} } = {}) => {
+  if (!stream || typeof stream.on !== "function") return stream;
+  stream.on("error", error => {
+    // 不 re-throw、不 destroy：错误已经由 pipe 链传给下游，这里只是兜住
+    // "没有任何监听者"这个会让进程退出的状态。
+    logger?.warn("stream.error_guarded", {
+      label,
+      code: error?.code || error?.cause?.code,
+      error: error instanceof Error ? error.message : String(error),
+      ...logFields,
+    });
+  });
+  return stream;
+};
+
 const fetchBinary = async (url, config, options = {}) => {
   const logger = options.logger;
   const maxAttempts = Math.max(1, Number(config.apiRetryAttempts || 0) + 1);
@@ -1019,8 +1458,23 @@ const prepareVideoInput = async (videoMeta, config, options = {}) => {
   const keystream = await generateKeystream(String(videoMeta.decodeKey));
   const { body, cancelTimeout } = await fetchMediaResponse(videoMeta.videoUrl, config, { logger });
   const decryptTransform = createWeChatDecryptTransform(keystream);
+
+  // 🔴 立刻给源流挂兜底 error 监听，堵住「流已创建、ffmpeg 还没挂监听」那段窗口 ——
+  //    否则对端在这里断流就是 unhandled 'error'，**整个进程退出**（见 guardStreamErrors）。
+  const source = guardStreamErrors(toNodeReadable(body), {
+    logger,
+    label: "wechat_channels:media",
+    logFields: { title: videoMeta.title },
+  });
   // web stream (response.body) 转 Node readable 后过解密 transform
-  const decryptedStream = toNodeReadable(body).pipe(decryptTransform);
+  const decryptedStream = source.pipe(decryptTransform);
+  // 解密 transform 自己也要兜住：源流错误经 `source.pipe` 已经会让它 destroy，
+  // 但 destroy 期间若无人接手 'error'，同样是进程级事故。
+  guardStreamErrors(decryptedStream, {
+    logger,
+    label: "wechat_channels:decrypted",
+    logFields: { title: videoMeta.title },
+  });
 
   logger?.info("wechat_channels.media.prepare.end", {
     title: videoMeta.title,
@@ -1129,7 +1583,14 @@ const extractAudioFromFetchedMedia = async (videoUrl, config, options = {}) => {
       ...describeVideoUrlForDiagnostics(videoUrl),
     });
   }
-  const inputStream = toNodeReadable(body);
+  // 🔴 同视频号那条：源流在交给 ffmpeg **之前**必须有兜底 error 监听。
+  //    `extractAudioFromStream` 里虽然会挂 `inputStream.on("error")`，但那是进入它之后
+  //    才挂的；这段窗口里对端断流就是 unhandled 'error' → 进程退出。
+  const inputStream = guardStreamErrors(toNodeReadable(body), {
+    logger,
+    label: "tikhub:media-stream",
+    logFields: describeVideoUrlForDiagnostics(videoUrl),
+  });
 
   try {
     return await extractAudioFromStream(inputStream, config, {
@@ -1711,6 +2172,76 @@ export const transcribeVideo = async (videoMeta, config, options = {}) => {
   const hasMusicProvider = providers.includes("tikhub-music");
   try {
     for (const provider of providers) {
+      // ── 豆包录音文件识别 2.0：只传 URL，服务端自己拉，不需要本地 ffmpeg ──
+      // 优先用 `music.play_url` 的 mp3（音量/人声与视频一致，且是纯音频、体积小）；
+      // 音源按 music(mp3) → video(m4a) 排序；一个源空/坏时换另一个重试（成本接近零）。
+      if (provider === "doubao-file") {
+        const fileSources = pickDoubaoFileAudioSources(videoMeta);
+        if (fileSources.length === 0) {
+          logger?.info("transcript.provider.skipped", {
+            provider,
+            reason: "no direct http(s) media url for server-side fetch",
+            videoTitle: videoMeta.title,
+          });
+          continue;
+        }
+        const providerStartedAt = Date.now();
+        try {
+          logger?.info("transcript.provider.start", {
+            provider,
+            videoTitle: videoMeta.title,
+            sourceKinds: fileSources.map(source => source.kind).join(","),
+            // 多源的意义：一个源空/坏时换另一个，成本接近零（见 recognizeDoubaoFileAudio）。
+            sourceCount: fileSources.length,
+          });
+          onProgress({
+            step: "transcript-provider-start",
+            provider,
+            message: `尝试转写方案：${provider}（豆包录音文件识别 2.0，服务端直接拉音频，${fileSources.length} 个音源）`,
+          });
+          const asr = await recognizeDoubaoFileAudio(
+            { audioSources: fileSources },
+            config,
+            { logger },
+          );
+          const text = String(asr?.text || "").trim();
+          if (!text) throw new Error("豆包录音文件识别返回空文本");
+          const value = {
+            text,
+            provider: "doubao-file-asr",
+            logid: asr.logid,
+            duration: asr.duration,
+          };
+          logger?.info("transcript.provider.success", {
+            provider: value.provider,
+            videoTitle: videoMeta.title,
+            textLength: text.length,
+            audioSourceKind: asr.sourceKind || "",
+            elapsedMs: Date.now() - providerStartedAt,
+          });
+          onProgress({
+            step: "transcript-provider-success",
+            provider: value.provider,
+            message: `转写方案成功：${value.provider}`,
+          });
+          transcriptCache.set(cacheKey, { createdAt: Date.now(), value });
+          return value;
+        } catch (error) {
+          logger?.warn("transcript.provider.failed", {
+            provider,
+            videoTitle: videoMeta.title,
+            code: error?.code,
+            error: error instanceof Error ? error.message : "doubao-file provider failed",
+          });
+          warnings.push({
+            provider,
+            step: "doubao-file",
+            code: error?.code,
+            message: error instanceof Error ? error.message : "doubao-file provider failed",
+          });
+          continue;
+        }
+      }
       if (provider === "tikhub-music" && !videoMeta.musicUrl) {
         logger?.info("transcript.provider.skipped", {
           provider,
@@ -2116,13 +2647,14 @@ const normalizeCreativeCandidates = (value, adaptation, agentName, logger) => {
 };
 
 /** 原文案类型判断的归一化：认不出的类型一律 unknown，不猜。 */
-const normalizeOriginalType = (value, allowedTypes) => {
+const normalizeOriginalType = (value, allowedTypes, labels = {}) => {
   const output = value?.output && typeof value.output === "object" ? value.output : value;
   const type = String(output?.originalType || output?.original_type || "").trim();
   const valid = allowedTypes.includes(type);
   return {
     type: valid ? type : "unknown",
-    typeLabel: valid ? "" : "待人工判断",
+    // 命中时补中文标签，省得每个调用方各查一次；判不出时保留人工判断的措辞。
+    typeLabel: valid ? (labels[type] || "") : "待人工判断",
     reason: cleanModelText(output?.reason || output?.originalReason || "").slice(0, 300),
   };
 };
@@ -2166,6 +2698,34 @@ const fallbackTitleText = (videoMeta, transcriptText) => {
     "优势：DeepSeek 创作 Agent 暂时不可用时，保留可编辑标题，避免任务中断",
     "技巧：使用原视频标题承接内容主题，后续可人工继续优化",
   ].join("\n");
+};
+
+/**
+ * 标题配比已生效、但标题 Agent 失败时的兜底。
+ *
+ * 与 `fallbackTitleText` 的区别：这里**已经拿到了配比计划**，所以只填第 1 个槽位
+ * （用对标视频原标题顶位），并在文本里如实说明「只出了 1 条、原因是 Agent 不可用」。
+ *
+ * 🔴 刻意**不按槽位编满 10 条**：那会把「模型没写出来」伪装成「生成成功」，
+ *    用户拿到 10 条看起来正常的标题却不知道其中 9 条是模板占位 —— 这正是
+ *    HANDOFF 反复强调的「静默降级别当成成功」。宁可少给、并且说清楚。
+ */
+const buildTitleAdaptationFallback = (videoMeta, transcriptText, adaptation) => {
+  const title = compactText(videoMeta.title || firstSentence(transcriptText, 32) || "对标视频核心内容拆解", 32);
+  const slot = Array.isArray(adaptation?.slots) ? adaptation.slots[0] : null;
+  const typeLabel = String(slot?.typeLabel || "").trim();
+  const typeKey = String(slot?.type || "").trim();
+  const candidates = [{
+    index: 1,
+    type: typeKey,
+    typeLabel,
+    content: title,
+  }];
+  return {
+    titleText: formatTitleCandidatesAsText(candidates, null),
+    candidates,
+    originalType: null,
+  };
 };
 
 const fallbackScriptText = (videoMeta, transcriptText) => {
@@ -2355,12 +2915,16 @@ export const runCreativeAgents = async (videoMeta, transcript, config, options =
   const logger = options.logger;
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : () => {};
   const transcriptText = transcript.text || "";
-  // 选题库配比（可选）。取不到时下面两个 agent 原样走旧的自由二创提示词。
+  // 选题库配比（可选）。取不到时三条 agent 各自走旧的自由二创提示词。
   const adaptation = options.adaptation || null;
   const goldAdaptation = adaptation?.goldThreeSeconds || null;
   const endingAdaptation = adaptation?.endingHooks || null;
+  // 标题配比（2.3 标题）：来源是 2.2 黄金三秒报告的 categoryBreakdown，
+  // 类型集合与三秒相同（见 titleLibrary.js 的两个设计决定）。
+  const titleAdaptation = adaptation?.title || null;
   const goldInput = buildAdaptationInput(creativeInput, goldAdaptation);
   const endingInput = buildAdaptationInput(creativeInput, endingAdaptation);
+  const titleInput = buildAdaptationInput(creativeInput, titleAdaptation);
 
   const runGoldOpeningHook = () => (goldInput
     ? runJsonAgent({
@@ -2406,6 +2970,42 @@ export const runCreativeAgents = async (videoMeta, transcript, config, options =
       normalizer: normalizeEndingHook,
     }, config, { logger }));
 
+  /**
+   * 标题 agent（2.3 标题）。
+   *
+   * **有**标题配比：走「按槽位二创」（JSON 结构化输出）——模型判断原标题类型 +
+   * 严格按槽位生成，归一化后由 `formatTitleCandidatesAsText` 渲染成前端能解析的
+   * 文本块（类型标签随文本走，见 titleLibrary.js 的格式说明）。
+   *
+   * **没有**配比：原样保留旧的自由创作口径 —— 直接 `callDeepSeek` 拿纯文本，
+   * 不经过 JSON 解析。⚠️ 这里**不能**顺手改成 `runJsonAgent`：旧口径的产物本来
+   * 就是一段非 JSON 的标题列表文本，套上 JSON 解析必然失败，会白白多打一次
+   * 「JSON 修复器」请求（实测确认过），既费 token 又让下游拿到 object 而不是文本。
+   *
+   * 两条路都归一成 `{ titleText, candidates, originalType }` 同一个形状，
+   * 调用方不用分叉。
+   */
+  const runTitle = () => (titleInput
+    ? runJsonAgent({
+      system: CREATIVE_TITLE_PROMPT,
+      user: titleInput,
+      interfaceName: "deepseek:agent-title-adapt",
+      normalizer: value => {
+        const output = value?.output && typeof value.output === "object" ? value.output : value;
+        const candidates = normalizeCreativeCandidates(value, titleAdaptation, "title", logger);
+        const originalType = normalizeOriginalType(output, TITLE_TYPE_KEYS, TITLE_TYPE_LABELS);
+        return {
+          // 产物是**一个字符串**：工作流 payload 的 title 字段只接受字符串，
+          // 前端再从字符串里解析候选列表（parseTitleBlocks）。
+          titleText: formatTitleCandidatesAsText(candidates, originalType),
+          candidates,
+          originalType,
+        };
+      },
+    }, config, { logger })
+    : callDeepSeek({ system: TITLE_PROMPT, user: creativeInput, interfaceName: "deepseek:agent-title" }, config, { logger })
+      .then(text => ({ titleText: cleanModelText(text), candidates: [], originalType: null })));
+
   const [openingHook, endingHook, titleText, scriptText] = await Promise.all([
     runCreativeStep({
       agent: "opening-hook",
@@ -2419,13 +3019,15 @@ export const runCreativeAgents = async (videoMeta, transcript, config, options =
       run: runEndingHook,
       fallback: fallbackEndingHook,
     }, config, { logger, onProgress }),
-    // ⚠️ 标题与二创文案**刻意保持原样**：本轮用户明确只要三秒与结尾钩子两项
-    //    （标题类型配比在系统里还不存在，见 HANDOFF §0.2）。别顺手改这两个。
+    // 标题：有标题配比时按大类配比逐槽位生成（2.3 标题），没有时保持原来的
+    // 自由创作口径。降级不阻断内容生成。
     runCreativeStep({
       agent: "title",
-      interfaceName: "deepseek:agent-title",
-      run: () => callDeepSeek({ system: TITLE_PROMPT, user: creativeInput, interfaceName: "deepseek:agent-title" }, config, { logger }),
-      fallback: () => fallbackTitleText(videoMeta, transcriptText),
+      interfaceName: titleInput ? "deepseek:agent-title-adapt" : "deepseek:agent-title",
+      run: runTitle,
+      fallback: () => (titleAdaptation
+        ? buildTitleAdaptationFallback(videoMeta, transcriptText, titleAdaptation)
+        : { titleText: fallbackTitleText(videoMeta, transcriptText), candidates: [], originalType: null }),
     }, config, { logger, onProgress }),
     runCreativeStep({
       agent: "script",
@@ -2442,10 +3044,19 @@ export const runCreativeAgents = async (videoMeta, transcript, config, options =
     });
   }
 
+  // 标题步骤现在统一产出 `{ titleText, candidates, originalType }`：
+  // 有没有配比都是这个形状，调用方不用分叉。旧口径的裸字符串在 runTitle 里
+  // 已经归一化过了（见上面的 runTitle）。
+  const titleValue = titleText.value && typeof titleText.value === "object"
+    ? titleText.value
+    : { titleText: cleanModelText(titleText.value), candidates: [], originalType: null };
+
   return {
     openingHook: openingHook.value,
     endingHook: endingHook.value,
-    titleText: cleanModelText(titleText.value),
+    titleText: cleanModelText(titleValue.titleText),
+    titleCandidates: Array.isArray(titleValue.candidates) ? titleValue.candidates : [],
+    titleOriginalType: titleValue.originalType || null,
     scriptText: cleanModelText(scriptText.value),
     warnings,
   };

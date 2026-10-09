@@ -7,9 +7,12 @@ import { Badge } from "./components/ui/badge";
 import { ArrowLeft } from "lucide-react";
 import { apiUrl, fetchWithRetry, parseApiJson } from "./api";
 import { useAuth } from "./auth.tsx";
-import { runTopicContentAnalysis, type TopicAnalysis } from "./topicContentAnalysis";
+import { loadLibraryForCustomer, runTopicContentAnalysis, type TopicAnalysis } from "./topicContentAnalysis";
+import { buildTopicAnalysisScopeKey, canReuseTopicAnalysis, decideTopicAnalysisAction } from "./topicAnalysisPipeline";
+import { useStageDraft } from "./stageDraft";
 import {
   TOPIC_MIN_LIKES,
+  parseMinLikes,
   attachContent,
   filterByLikes,
   shouldExtractTranscripts,
@@ -105,6 +108,11 @@ type TikhubBatchResult = {
   finderUsername?: string;
   authorName?: string;
   videosCount?: number;
+  /**
+   * 视频号专有：这批里有多少条**拿不到媒体直链 / 解密密钥**（后端算好如实回传）。
+   * 缺这两个字段的条目无法在本地解密转写 —— 界面要如实提示，不能装作正常。
+   */
+  missingMediaCount?: number;
   secUserResponse?: unknown;
   videosResponse?: unknown;
   topics?: Topic[];
@@ -501,6 +509,16 @@ export default function App() {
   });
   const [topicDaysInput, setTopicDaysInput] = useState(() => String(topicDays));
   const [topicDaysError, setTopicDaysError] = useState<string | null>(null);
+  /**
+   * 点赞门槛：**用户可自定义**（2026-09-28），默认 {@link TOPIC_MIN_LIKES}。
+   *
+   * 口径是**大于等于**（填 100 时 100 算达标）—— 之前是严格大于，这次一并改了口径。
+   * 用 useStageDraft 持久化：从二创页返回时组件会卸载重建，不存的话门槛会退回默认值，
+   * 而门槛一变 `qualifiedTopics` 就变 → 整批重新分析（转写+打标签，真花钱）。
+   */
+  const [minLikes, setMinLikes] = useStageDraft<number>("topics.minLikes", TOPIC_MIN_LIKES);
+  const [minLikesInput, setMinLikesInput] = useStageDraft<string>("topics.minLikesInput", String(TOPIC_MIN_LIKES));
+  const [minLikesError, setMinLikesError] = useState<string | null>(null);
   const [olderTopicsLoading, setOlderTopicsLoading] = useState(false);
   const [olderTopicsError, setOlderTopicsError] = useState<string | null>(null);
   const [expandedTopicGroups, setExpandedTopicGroups] = useState<number[]>([0]);
@@ -660,7 +678,7 @@ export default function App() {
    * 点赞门槛：**列表只保留严格 `> 100`** 的视频（用户 2026-09-21 口径）。
    *
    * 这不是"按点赞排序"——排序仍然由上面的 sortKey 决定；这里是**过滤**。
-   * 缺失点赞归一化成 0，天然被挡掉。
+   * 缺失点赞归一化成 0；门槛填 0 时它们会被纳入（有意的）。
    */
   // 脚本 + 标签：按视频 id 索引。单独放 state 是因为它要跨「抓取 / 切窗口」保留。
   //
@@ -668,10 +686,18 @@ export default function App() {
   // 反过来的话 useMemo 会在初始化前读 `topicContent` → TDZ 报错
   // （`Cannot access 'topicContent' before initialization`）整页白屏。
   // `npm run build` 和单元测试都拦不住这个，是无头浏览器渲染时才炸出来的。
-  const [topicContent, setTopicContent] = useState<TopicContentMap>({});
-  const [topicAnalysis, setTopicAnalysis] = useState<TopicAnalysis>({
+  //
+  // 🔴 这两个都用 `useStageDraft` 持久化（2026-09-28）：选题页 →「开始二创」→
+  //    返回，路由会让本组件**卸载重建**，普通 useState 一重建就归零，于是整批
+  //    重新分析一遍 —— 转写虽然被后端缓存兜住（快），但**打标签要重跑 DeepSeek**，
+  //    是真实的钱和时间。`tikhubResults` 早就有持久化（所以列表还在），
+  //    偏偏结果没存，症状就是"每次返回都重新跑一遍"。
+  const [topicContent, setTopicContent] = useStageDraft<TopicContentMap>("topics.content", {});
+  const [topicAnalysis, setTopicAnalysis] = useStageDraft<TopicAnalysis>("topics.analysis", {
     status: "idle", message: "", transcriptsExtracted: false, taggedCount: 0, scriptCount: 0, error: "",
   });
+  // 上一轮分析覆盖的「范围指纹」。存下来才能在重建后判断"这批视频已经分析过了"。
+  const [topicAnalysisScope, setTopicAnalysisScope] = useStageDraft<string>("topics.analysisScope", "");
 
   /**
    * 点赞门槛：**列表只保留严格 `> 100`** 的视频（用户 2026-09-21 口径）。
@@ -679,7 +705,7 @@ export default function App() {
    * 这不是「按点赞排序」——排序仍由 sortKey 决定；这里是**过滤**。
    * 缺失点赞归一化成 0，天然被挡掉。
    */
-  const qualifiedTopics = useMemo(() => filterByLikes(tikhubTopics, TOPIC_MIN_LIKES), [tikhubTopics]);
+  const qualifiedTopics = useMemo(() => filterByLikes(tikhubTopics, minLikes), [tikhubTopics, minLikes]);
   // 脚本与标签是异步补上的；挂到 topic 上之后，列表渲染与 handleSubmit 共用同一份数据。
   const topicsWithContent = useMemo(() => attachContent(qualifiedTopics, topicContent), [qualifiedTopics, topicContent]);
 
@@ -844,6 +870,8 @@ export default function App() {
     context: NonNullable<typeof lastTopicFetchRef.current>,
   ) => {
     let lastAccountKey = "";
+    // 视频号媒体直链缺失的累计数（后端逐段回传）。抓完统一提示，避免用户干等。
+    let missingMediaTotal = 0;
     while (generation === topicFetchGeneration.current) {
       const runnable = context.jobs.filter(job => !job.done && !job.failed);
       if (runnable.length === 0) break;
@@ -863,6 +891,8 @@ export default function App() {
           mergeTopicSlice(sliceResults);
           const result = sliceResults[0];
           if (!result) throw new Error("接口未返回账号结果");
+          // 视频号：累计"没拿到媒体直链"的条数（后端算好回传），抓完统一提示。
+          missingMediaTotal += Number(result.missingMediaCount || 0);
 
           job.resume = result.resume || null;
           if (result.error || result.stopReason === "page_error") {
@@ -900,6 +930,15 @@ export default function App() {
     }
 
     if (generation !== topicFetchGeneration.current) return;
+    // 🔴 视频号缺媒体直链要**抓完就提示**：缺 mediaUrl/decodeKey 的条目无法在本地
+    //    解密转写，最终表现是"选题列表有内容、但脚本和标签一直不动"，用户看不出原因。
+    //    这里说清楚，用户就知道该重新获取作品，而不是干等。
+    if (missingMediaTotal > 0) {
+      setTikhubError(
+        `有 ${missingMediaTotal} 条视频号作品没有拿到媒体直链或解密密钥，这些条无法提取脚本与打标签（其余条目不受影响）。` +
+        "若全部如此，请重新获取该账号的作品后重试。",
+      );
+    }
     const failedJobs = context.jobs.filter(job => job.failed);
     const warningJobs = context.jobs.filter(job => job.warningMessage);
     const paymentRequired = failedJobs.some(job => /HTTP 402|Payment Required/i.test(job.errorMessage || ""));
@@ -992,6 +1031,14 @@ export default function App() {
       setTopicDaysError(error instanceof Error ? error.message : "时间范围无效");
       return;
     }
+
+    // 点赞门槛：就地校验并**在这里生效**（不随输入框即时生效，见 UI 处的说明）。
+    // 校验失败直接中止 —— 不能拿一个没生效的门槛去抓数据，否则筛出来的列表
+    // 和界面显示的数值对不上。
+    const parsedMinLikes = parseMinLikes(minLikesInput);
+    setMinLikesError(parsedMinLikes.ok ? null : parsedMinLikes.error);
+    if (!parsedMinLikes.ok) return;
+    setMinLikes(parsedMinLikes.value);
 
     setTikhubLoading(true);
     setTikhubError(null);
@@ -1292,22 +1339,79 @@ export default function App() {
    *    转写结果在后端按 `scope: "script"` 永久缓存，所以换窗口回来是秒开的。
    */
   const analyzedKeyRef = useRef("");
+
+  /**
+   * 「这批视频」的范围指纹 —— **effect 的唯一依赖**。
+   *
+   * 用 `useMemo` 保证它是稳定的**字符串**：值相同就是同一个字符串（原始类型比较），
+   * 不会像数组/对象那样每次渲染都是新引用而误触发 effect 重跑。
+   */
+  const customerIdForAnalysis = String(activeTask?.customerId || "");
+  const topicAnalysisScopeKey = useMemo(() => (
+    qualifiedTopics.length === 0
+      ? ""
+      : buildTopicAnalysisScopeKey(customerIdForAnalysis, topicDays, qualifiedTopics.map(topic => topic.id))
+  ), [qualifiedTopics, topicDays, customerIdForAnalysis]);
+
+  /**
+   * 下面这些值 effect 里要用，但**绝不能进依赖数组**。
+   *
+   * 🔴 它们中的 `topicContent` / `topicAnalysisScope` 会被这个 effect **自己改写**
+   *    （`setTopicContent` / `setTopicAnalysisScope`）。进了依赖就是「启动即自我取消」：
+   *    effect 一跑就改依赖 → cleanup 执行 → 正在进行的分析被永久取消，界面停在第一句
+   *    文案上、不报错也不推进。详见 `shouldCancelAnalysisRun` 的注释。
+   *    用 ref 读取最新值即可满足这些副作用的需要。
+   */
+  const qualifiedTopicsRef = useRef(qualifiedTopics);
+  qualifiedTopicsRef.current = qualifiedTopics;
+  const topicContentRef = useRef(topicContent);
+  topicContentRef.current = topicContent;
+  const topicAnalysisScopeRef = useRef(topicAnalysisScope);
+  topicAnalysisScopeRef.current = topicAnalysisScope;
+  const minLikesRef = useRef(minLikes);
+  minLikesRef.current = minLikes;
+  const topicDaysRef = useRef(topicDays);
+  topicDaysRef.current = topicDays;
+
   useEffect(() => {
-    if (qualifiedTopics.length === 0) return;
-    const customerId = String(activeTask?.customerId || "");
-    const key = `${customerId}|${topicDays}|${qualifiedTopics.map(topic => topic.id).join(",")}`;
-    if (analyzedKeyRef.current === key) return;
+    const key = topicAnalysisScopeKey;
+    const action = decideTopicAnalysisAction({
+      scopeKey: key,
+      analyzedKey: analyzedKeyRef.current,
+      // 复用判断依据是持久化下来的「范围指纹」：客户 + 时间窗口 + 这批视频 id。
+      // 三者任一变化（换任务 / 换窗口 / 抓到新视频）就必须重新分析 —— 复用错批次的
+      // 标签比重新跑一遍更糟，用户会拿着上一批的标签去二创。
+      savedScopeKey: topicAnalysisScopeRef.current,
+      contentCount: Object.keys(topicContentRef.current).length,
+    });
+    if (action === "skip") return;
+    // 无论复用还是重跑，都先登记这个 key，避免同批范围重复触发。
     analyzedKeyRef.current = key;
+    if (action === "reuse") return;
+
+    const topics = qualifiedTopicsRef.current;
+    const customerId = customerIdForAnalysis;
+    const days = topicDaysRef.current;
+    const threshold = minLikesRef.current;
+
+    setTopicAnalysisScope(key);
 
     let cancelled = false;
     setTopicAnalysis(previous => ({ ...previous, status: "loading-library", message: "", error: "" }));
+    // ⚠️ 同时清空旧的脚本/标签：换任务或换时间窗口后，上一次的结果若留在 state 里，
+    //    界面会拿**上一批视频**的标签渲染这一批（错得很难发现）。清空后由下面的
+    //    `onContent` 逐条填回来。
+    setTopicContent({});
     (async () => {
       try {
         const { content, analysis } = await runTopicContentAnalysis({
-          topics: qualifiedTopics,
+          topics,
           customerId,
-          days: topicDays,
+          days,
+          minLikes: threshold,
           onProgress: patch => { if (!cancelled) setTopicAnalysis(previous => ({ ...previous, ...patch })); },
+          // 逐条/逐批推进：每完成一条就把**累计**结果推进 state，用户不必等全部跑完。
+          onContent: next => { if (!cancelled) setTopicContent(next); },
         });
         if (cancelled) return;
         setTopicContent(content);
@@ -1315,6 +1419,7 @@ export default function App() {
       } catch (error) {
         if (cancelled) return;
         // 失败要说清楚，但**不能挡住列表**：筛选结果本身仍然可用。
+        // 已经逐条落地的内容也**不清空** —— 方案一的意义就是"出了几条是几条"。
         setTopicAnalysis(previous => ({
           ...previous,
           status: "error",
@@ -1322,8 +1427,29 @@ export default function App() {
         }));
       }
     })();
+    // 这个 cleanup 只在**范围指纹变化**（或卸载）时执行 —— 此时取消旧的分析是对的。
+    // 依赖数组里只有 key，所以它不会因为"进度文案变了""逐条结果落地了"而被误触发。
     return () => { cancelled = true; };
-  }, [qualifiedTopics, topicDays, activeTask?.customerId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- 唯一依赖就是范围指纹，其余值走 ref（见上方注释）
+  }, [topicAnalysisScopeKey]);
+
+  /**
+   * 预热选题库词典：**一进入选题页就发请求**，不等视频抓完。
+   *
+   * 用户口径（2026-09-24）：创建任务进入选题生成页时就该开始读库。
+   * 读库是纯 Mongo 查询、几百毫秒到几秒；而它和「抓视频」是两件互不依赖的事，
+   * 串起来做成"抓完再读库"白等一段时间。这里提前把 Promise 发出去，
+   * 后面 `runTopicContentAnalysis` 走同一份 memo（见 `loadLibraryForCustomer`），
+   * 命中就是 0 成本。
+   *
+   * ⚠️ 只预热，不 setState、不报错：库不存在 / 没有 customerId 都在真正分析时
+   *    按原口径如实说明。预热失败最坏结果就是分析时重新请求一次。
+   */
+  useEffect(() => {
+    const customerId = String(activeTask?.customerId || "");
+    if (!customerId) return;
+    void loadLibraryForCustomer(customerId).catch(() => {});
+  }, [activeTask?.customerId]);
 
   const handleSubmit = () => {
     // ⚠️ 用挂上 content 的版本：脚本与标签要跟着 topic 一起进 sessionStorage，
@@ -1660,6 +1786,57 @@ export default function App() {
                   </label>
                   {topicDaysError && <div className="w-full text-xs text-red-500">{topicDaysError}</div>}
                 </div>
+                {/*
+                  点赞门槛：用户可自定义（2026-09-28）。
+                  ⚠️ 只改输入框、**不立即改门槛** —— 门槛一变 `qualifiedTopics` 就变，
+                     会触发整批重新分析（转写 + 打标签，真花钱）。所以这里沿用时间窗口
+                     同一套做法：输入先落在 `minLikesInput`，点下方「开始获取」时才生效。
+                */}
+                <div className="mt-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs font-semibold text-slate-600">点赞门槛</span>
+                  {[0, 100, 500, 1000, 5000].map(value => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => {
+                        setMinLikesInput(String(value));
+                        setMinLikesError(null);
+                      }}
+                      className={`rounded-full border px-3 py-1 text-xs transition ${
+                        minLikesInput === String(value)
+                          ? "border-blue-500 bg-blue-50 text-blue-700"
+                          : "border-slate-200 text-slate-600 hover:border-slate-300"
+                      }`}
+                    >
+                      ≥ {value}
+                    </button>
+                  ))}
+                  <label className="ml-auto text-xs text-slate-600">
+                    自定义
+                    <input
+                      type="number"
+                      min={0}
+                      step={1}
+                      value={minLikesInput}
+                      onChange={event => {
+                        setMinLikesInput(event.target.value);
+                        setMinLikesError(null);
+                      }}
+                      className="ml-2 h-8 w-24 rounded-md border border-slate-200 bg-white px-2 text-sm outline-none focus:border-blue-300 focus:ring-2 focus:ring-blue-100"
+                    />
+                    <span className="ml-1 text-slate-400">赞及以上</span>
+                  </label>
+                  {minLikesError && <div className="w-full text-xs text-red-500">{minLikesError}</div>}
+                  {/*
+                    ⚠️ 门槛是**点击获取时才生效**，所以当输入值与生效值不一致时要说出来，
+                       否则用户改完输入框看列表没变，会以为功能坏了。
+                  */}
+                  {!minLikesError && minLikesInput !== String(minLikes) && (
+                    <div className="w-full text-xs text-amber-600">
+                      门槛已改为 {minLikesInput}，点「开始获取」后按新门槛筛选。
+                    </div>
+                  )}
+                </div>
                 <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-4">
                   <div className="text-xs font-semibold text-slate-600">
                     {sourcePlatform === "wechat_channels" ? "视频号对标账号名称（多行）" : sourcePlatform === "tiktok" ? "TikTok 博主主页链接（多行）" : "抖音博主主页分享链接（多行）"}
@@ -1892,7 +2069,7 @@ export default function App() {
                     <TrendingUp className="w-3.5 h-3.5" />
                     共 {topicsWithContent.length} 个选题
                     {/* 筛选口径必须写出来，否则"少了很多条"看着像 bug。 */}
-                    <span className="text-slate-400">（已过滤：点赞 &gt; {TOPIC_MIN_LIKES}）</span>
+                    <span className="text-slate-400">（已筛选：点赞 ≥ {minLikes}）</span>
                   </div>
                 </div>
                 {/* 脚本 + 标签的进度 / 结果 / 失败原因：都如实写出来。
@@ -2045,20 +2222,26 @@ export default function App() {
                                         {topic.content.subcategoryName}
                                       </Badge>
                                     )}
-                                    {topic.content?.scriptSource === "transcript" && (
-                                      <Badge variant="secondary" className="bg-emerald-50 text-emerald-700 border-emerald-200 text-xs">
-                                        已提取脚本
-                                      </Badge>
-                                    )}
                                   </div>
-                                  {/* 脚本：默认收起，展开就能看到二创要用的原文。 */}
+                                  {/* 脚本：默认收起，展开就能看到二创要用的原文。
+                                      ⚠️ 这里刻意**不标**「已提取脚本」徽章、也不在入口上写
+                                      「（真实转写）/（发布文案）」：卡片上已经有大类/小类标签，
+                                      再加一行状态徽章会把这一行挤散。来源差异不丢 —— 展开后的
+                                      正文里有「脚本来源」一行（见下）。 */}
                                   {topic.content?.script && (
                                     <details className="mb-2">
                                       <summary className="cursor-pointer text-xs font-medium text-blue-600 hover:text-blue-700">
-                                        查看脚本（{topic.content.scriptSource === "transcript" ? "真实转写" : "发布文案"}）
+                                        查看脚本
                                       </summary>
-                                      <div className="mt-2 whitespace-pre-wrap rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs leading-6 text-slate-700">
-                                        {topic.content.script}
+                                      <div className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2">
+                                        {/* 来源仍然如实说明，只是从入口挪进正文：需要判断可信度的人
+                                            展开就能看到，不需要的人不会被它打扰。 */}
+                                        <div className="mb-1.5 text-[11px] text-slate-400">
+                                          脚本来源：{topic.content.scriptSource === "transcript" ? "真实转写" : "发布文案"}
+                                        </div>
+                                        <div className="whitespace-pre-wrap text-xs leading-6 text-slate-700">
+                                          {topic.content.script}
+                                        </div>
                                       </div>
                                     </details>
                                   )}

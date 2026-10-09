@@ -45,16 +45,19 @@ const shouldLogTikHubWechatResponses = () => {
 };
 
 const getTranscriptProviders = () => {
-  const allowed = new Set(["tikhub-music", "tikhub-ffmpeg", "ffmpeg", "doubao-video"]);
+  // ⚠️ 这个集合是**白名单**：TRANSCRIPT_PROVIDERS 里认不出的名字会被静默过滤掉
+  //    （不报错，只是不生效）。新增 provider 必须同时加到 providers.js 的分支里，
+  //    否则用户配了却看不到任何效果 —— 这类"配了没用"最难查。
+  const allowed = new Set(["tikhub-music", "tikhub-ffmpeg", "ffmpeg", "doubao-video", "doubao-file"]);
   const enableTikHubProvider = String(process.env.TIKHUB_TRANSCRIPT_PROVIDER_ENABLED || "true").toLowerCase() !== "false";
   // tikhub-music 用 music.play_url mp3 直送 ASR，跳过 ffmpeg 提取（实测快约 12 倍）。
   // 默认开启。music 是纯背景音乐（无人声）时 ASR 返回空，provider 链自动回退到 tikhub-ffmpeg。
   // 如需关闭设 TIKHUB_MUSIC_PROVIDER_ENABLED=false。
   const enableMusicProvider = String(process.env.TIKHUB_MUSIC_PROVIDER_ENABLED || "true").toLowerCase() !== "false";
-  const providers = splitCsv(process.env.TRANSCRIPT_PROVIDERS, ["ffmpeg", "doubao-video"])
+  const providers = splitCsv(process.env.TRANSCRIPT_PROVIDERS, ["doubao-file", "ffmpeg", "doubao-video"])
     .map(normalizeTranscriptProvider)
     .filter(item => allowed.has(item));
-  const normalized = providers.length > 0 ? providers : ["ffmpeg", "doubao-video"];
+  const normalized = providers.length > 0 ? providers : ["doubao-file", "ffmpeg", "doubao-video"];
   if (enableTikHubProvider && normalized.includes("ffmpeg") && !normalized.includes("tikhub-ffmpeg")) {
     normalized.unshift("tikhub-ffmpeg");
   }
@@ -93,7 +96,26 @@ export const getContentAgentConfig = () => {
     agentRetryBudgetMs: toInt(process.env.AGENT_RETRY_BUDGET_MS, 90000),
     transcriptProviders: getTranscriptProviders(),
     transcriptCacheTtlMs: toInt(process.env.AGENT_TRANSCRIPT_CACHE_TTL_MS, 60 * 60 * 1000),
+    // TikHub 解析缓存：2.2 与 2.3 跑同一批视频的同一个 link，解析（3.4~4.7s/条）是纯重复劳动。
+    // TTL 比转写缓存短，因为 CDN 直链会过期（拿到过期直链会让下载 403/404）。设 0 可关闭。
+    resolveCacheTtlMs: toInt(process.env.AGENT_RESOLVE_CACHE_TTL_MS, 30 * 60 * 1000),
+    resolveCacheMaxEntries: toInt(process.env.AGENT_RESOLVE_CACHE_MAX_ENTRIES, 500),
     ffmpegEnabled: String(process.env.FFMPEG_ENABLED || "true").toLowerCase() !== "false",
+    /**
+     * ffmpeg 单个进程的硬上限 —— 它同时兜住**下载 + 抽音频**，是这条链路唯一的卡死保护。
+     *
+     * 🔴 **别想当然调低。** 2026-09-28 实测（本机、真实抖音视频、完整脚本口径）：
+     *      57 秒的视频  → 64.3s
+     *      103 秒的视频 → 90.2s   ← 已经贴着 90s 上限，余量只有 1.0x
+     *    当时我建议"调到 30~45 秒让卡死快速失败"，实测证明那是错的：正常视频
+     *    都会直接超时，然后回退到下一个 provider 再失败一遍 —— **比不调更低效**。
+     *
+     * 为什么 90s 才够：这道超时覆盖的是「CDN 下载整条视频 + 抽 16k 单声道音频」。
+     * 抖音 CDN 实测只有 1~2MB/s，而视频越大需要的时间近似随时长线性增长。
+     *
+     * 想调之前先量：`FFMPEG_TIMEOUT_MS` 设成小于实测值就等于让正常视频失败。
+     * 真要降，得先解决下载慢（本地解密/缓存）或换更快的抽取方式，而不是砍超时。
+     */
     ffmpegTimeoutMs: toInt(process.env.FFMPEG_TIMEOUT_MS, 90000),
     ffmpegAudioMaxBytes: toInt(process.env.FFMPEG_AUDIO_MAX_BYTES, 24 * 1024 * 1024),
     ffmpegFastProbeSize: toFfmpegSize(process.env.FFMPEG_FAST_PROBE_SIZE, "4194304"),
@@ -114,6 +136,25 @@ export const getContentAgentConfig = () => {
     doubaoAppKey: process.env.DOUBAO_APP_KEY || "",
     doubaoAccessKey: process.env.DOUBAO_ACCESS_KEY || "",
     doubaoResourceId: process.env.DOUBAO_RESOURCE_ID || "volc.bigasr.auc_turbo",
+    // ── 豆包录音文件识别模型 2.0（异步 submit + 轮询 query）─────────────────
+    // 与上面的 flash 同步接口是**两条独立通道**：
+    //   flash（默认端点 /recognize/flash）：客户端把音频 base64 传上去，同步返回。
+    //   文件识别（本组）：只传**音频 URL**，服务端自己去拉，任务异步，要轮询取结果。
+    //
+    // 用它的最大好处是**不需要本地 ffmpeg**：直接把 CDN 上的 mp3/mp4 地址交给服务端，
+    // 省掉「下载整个视频 + 本地抽音频」（实测 ffmpeg 全量提取 45s，而这条路约 10s）。
+    //
+    // 🔴 但它是异步任务，官方口径「任务通常在 3 小时内完成，高峰期可能延迟」——
+    //    延迟不可控是本条通道最大的风险。所以下面有轮询上限与超时，
+    //    **超时就当作这个 provider 失败**，由 provider 链自然回退到别的方案，
+    //    绝不让一条视频把整个批次挂死。
+    doubaoFileAsrSubmitUrl: process.env.DOUBAO_FILE_ASR_SUBMIT_URL || "https://openspeech.bytedance.com/api/v3/auc/bigmodel/submit",
+    doubaoFileAsrQueryUrl: process.env.DOUBAO_FILE_ASR_QUERY_URL || "https://openspeech.bytedance.com/api/v3/auc/bigmodel/query",
+    doubaoFileAsrResourceId: process.env.DOUBAO_FILE_ASR_RESOURCE_ID || "volc.seedasr.auc",
+    // 轮询间隔与总预算。实测一条 57 秒的视频约 10 秒出结果，默认预算给到 120 秒足够宽裕；
+    // 超过就走回退，不要在这条路上无限等。
+    doubaoFileAsrPollIntervalMs: toInt(process.env.DOUBAO_FILE_ASR_POLL_INTERVAL_MS, 2000),
+    doubaoFileAsrBudgetMs: toInt(process.env.DOUBAO_FILE_ASR_BUDGET_MS, 120000),
     doubaoVideoEndpoint: process.env.DOUBAO_VIDEO_ENDPOINT || "",
     doubaoVideoApiKey: process.env.DOUBAO_VIDEO_API_KEY || "",
     doubaoVideoModel: process.env.DOUBAO_VIDEO_MODEL || "doubao-seed-2-0-mini-260428",
@@ -137,7 +178,7 @@ export const getContentAgentConfig = () => {
     // 显式传这个顺序还会关掉「有 TikHub 就跳过本地 ffmpeg」那条隐式优化（见 transcribeVideo），
     // 否则顺序会被静默改回 TikHub 优先。TikHub 仍然留作兜底：本地 ffmpeg 失败会自动往下走。
     // 想回到旧行为，把它设成与 TRANSCRIPT_PROVIDERS 一致或留空即可。
-    goldTranscriptProviders: splitCsv(process.env.GOLD_TRANSCRIPT_PROVIDERS, ["ffmpeg", "tikhub-music", "tikhub-ffmpeg", "doubao-video"]),
+    goldTranscriptProviders: splitCsv(process.env.GOLD_TRANSCRIPT_PROVIDERS, ["doubao-file", "doubao-video", "tikhub-music", "tikhub-ffmpeg", "ffmpeg"]),
     // 设为 false 可整体关掉黄金三秒的转写，回到纯发布文案的行为。
     goldTranscriptEnabled: String(process.env.GOLD_TRANSCRIPT_ENABLED || "true").toLowerCase() !== "false",
     // 转写覆盖多少条 —— 与分析样本数（60）保持一致，否则部分大类只能靠发布文案推断。

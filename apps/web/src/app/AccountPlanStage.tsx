@@ -53,6 +53,11 @@ import { useAuth } from "./auth";
 import {
   analyzeAccountPlan,
   deleteAccountPlanReport,
+  // 🔴 少了这个导入，`removeBenchmarkReport`（「删除 1.2 报告」）会直接抛
+  //    `ReferenceError: deleteBenchmarkProfileReport is not defined` —— 点击即崩。
+  //    本项目的构建只跑 `vite build`、**不做类型检查**，所以"调用了却没导入"
+  //    在构建期完全不报错。这条是补上类型检查后暴露出来的真实缺陷。
+  deleteBenchmarkProfileReport,
   formatReportTime,
   getAccountPlanReport,
   getBenchmarkProfileReport,

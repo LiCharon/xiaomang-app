@@ -381,6 +381,141 @@ try {
     check(planNoBenchmark.status === 400, "  缺 1.2 报告时返回 400（而不是硬出一份残缺报告）");
   }
 
+  // ── 5.5 模块 4（4.1 单条视频复盘）────────────────────────────────────────
+  // 冒烟里的 DeepSeek 是假 key，所以这里恰好验到**最要紧的那条路径**：
+  // Agent 失败时必须**降级成规则兜底报告**（判定结论照常给出、建议文字留空），
+  // 而不是 500 —— 判定结论本来就是后端实算的，不依赖模型（§6.3-⑬）。
+  const reviewMetrics = {
+    plays: 12500, likes: 830, comments: 96, shares: 210, bookmarks: 340,
+    completionRate: 0.32, bounce2sRate: 0.18, completion5sRate: 0.55,
+    avgPlaySeconds: 42.5, durationSeconds: 118,
+  };
+  const reviewPayload = {
+    customerId: SMOKE_CUSTOMER_ID,
+    platform: "douyin",
+    metrics: reviewMetrics,
+    script: "员工主动离职能不能要赔偿？",
+    structureTags: {
+      categoryName: "风险防御与合规建设", subcategoryName: "入职合规与制度完善",
+      goldThreeSecondsType: "fear", titleType: "fear", endingHookType: "interaction",
+    },
+    video: { title: "员工主动离职能不能要赔偿？", link: "https://v.douyin.com/abc" },
+  };
+
+  const reviewAnon = await fetch(`${BASE}/api/agent/video-analysis`, {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(reviewPayload),
+  });
+  check(reviewAnon.status === 401, `★ 未登录跑 4.1 复盘 → 401（实际 ${reviewAnon.status}）`);
+
+  const review = await post("/api/agent/video-analysis", reviewPayload);
+  check(review.status !== 500, `/api/agent/video-analysis Agent 失败时不返回 500（实际 ${review.status}）`,
+    review.json?.error ? `后端错误：${review.json.error}` : serverLog.slice(-300));
+  check(review.status === 200 && review.json?.report?.analysisSource === "heuristic", "  降级为规则兜底报告");
+  const reviewReport = review.json?.report;
+  check(reviewReport?.structures?.length === 4, "  四大结构齐（判定结论由后端实算，不依赖模型）");
+  check((reviewReport?.structures || []).every(s => s.verdict === "reuse"), "  全优数据 → 四大结构全判「可模仿复用」");
+  check(reviewReport?.derived?.interactionRatePercent === 11.8, "  互动率实算 = 11.8%（(830+96+210+340)/12500）");
+  check(reviewReport?.playBucket?.label === "爆款", "  播放量 12500 → 爆款档");
+  check((reviewReport?.suggestions?.items || []).every(i => i.why === "" && i.how === ""),
+    "  兜底时建议文字留空（前端显示「待人工补充」），不编通用话术");
+  check(reviewReport?.structureTags?.goldThreeSecondsLabel === "恐惧", "  结构标签归一化到中文标签");
+  check(reviewReport?.metricReadout?.engagement?.some(m => m.meaning), "  指标读数表带「含义」（用户要求备注每个数据的意义）");
+
+  const reviewNoCustomer = await post("/api/agent/video-analysis", { ...reviewPayload, customerId: "" });
+  check(reviewNoCustomer.status === 400, "  缺客户时 400（复盘要用该客户的选题库做结构标签）");
+
+  const reviewSaved = await post("/api/video-analysis-reports", {
+    customerId: SMOKE_CUSTOMER_ID, customerName: "冒烟客户", report: reviewReport,
+  });
+  check(reviewSaved.status === 201 && reviewSaved.json?.item?.id, `保存 4.1 报告 → 201 + id（实际 ${reviewSaved.status}）`,
+    `响应：${JSON.stringify(reviewSaved.json)?.slice(0, 300)}`);
+  const reviewId = reviewSaved.json?.item?.id;
+  if (reviewId) {
+    const reviewGot = await (await fetch(`${BASE}/api/video-analysis-reports?id=${reviewId}`, { headers: { Cookie: cookie } })).json();
+    check(reviewGot?.item?.report?.reportType === "video_analysis", "按 id 取回 4.1 完整报告");
+    check(reviewGot?.item?.report?.script?.text === "员工主动离职能不能要赔偿？", "  · 文案完整带回（复盘靠它判结构标签）");
+    check(reviewGot?.item?.report?.metricReadout?.professional?.length > 0, "  · 指标读数表完整");
+    check(!("managerId" in (reviewGot?.item || {})), "  元数据不含 managerId（属主身份不外泄）");
+
+    const reviewAgain = await post("/api/video-analysis-reports", {
+      customerId: SMOKE_CUSTOMER_ID, customerName: "冒烟客户", report: reviewReport,
+    });
+    check(reviewAgain.json?.item?.id === reviewId, "  重复保存幂等");
+
+    const reviewList = await (await fetch(`${BASE}/api/video-analysis-reports`, { headers: { Cookie: cookie } })).json();
+    const listed = (reviewList?.items || []).find(item => item.id === reviewId);
+    check(Boolean(listed), "  经理列表能看到它");
+    check(listed && !("report" in listed), "  列表只给元数据（不带正文）");
+    check(listed?.optimizeCount === 0, "  元数据带 optimizeCount（列表上直接标出待优化条数）");
+
+    const reviewDel = await fetch(`${BASE}/api/video-analysis-reports?id=${reviewId}`, { method: "DELETE", headers: { Cookie: cookie } });
+    check(reviewDel.status === 200, `删除 4.1 报告 → 200（实际 ${reviewDel.status}）`);
+  }
+
+  // ── 5.6 Excel 上传解析（4.1 的入口）──────────────────────────────────────
+  // 这里现场合成一个最小 xlsx（STORE 不压缩），不依赖磁盘 fixture。
+  const buildReviewXlsx = () => {
+    const esc = value => String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const rows = [
+      ["视频标题", "播放量", "点赞", "评论", "转发", "收藏", "完播率", "2s跳出率", "5s完播率", "平均播放时长", "视频时长"],
+      ["员工主动离职能不能要赔偿？", "12500", "830", "96", "210", "340", "0.32", "0.18", "0.55", "42.5", "118"],
+    ];
+    const sheetXml = `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>${rows
+      .map((cells, r) => `<row r="${r + 1}">${cells.map((cell, c) => `<c r="${String.fromCharCode(65 + c)}${r + 1}" t="inlineStr"><is><t>${esc(cell)}</t></is></c>`).join("")}</row>`)
+      .join("")}</sheetData></worksheet>`;
+    const parts = [
+      ["[Content_Types].xml", "<Types/>"],
+      ["xl/workbook.xml", `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheets><sheet name="视频数据" sheetId="1" r:id="rId1"/></sheets></workbook>`],
+      ["xl/_rels/workbook.xml.rels", `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="/xl/worksheets/sheet1.xml" Id="rId1"/></Relationships>`],
+      ["xl/worksheets/sheet1.xml", sheetXml],
+    ];
+    const chunks = []; const central = []; let offset = 0;
+    for (const [name, content] of parts) {
+      const nameBuf = Buffer.from(name, "utf8");
+      const data = Buffer.from(content, "utf8");
+      const local = Buffer.alloc(30);
+      local.writeUInt32LE(0x04034b50, 0); local.writeUInt16LE(20, 4); local.writeUInt16LE(0, 8);
+      local.writeUInt32LE(data.length, 18); local.writeUInt32LE(data.length, 22); local.writeUInt16LE(nameBuf.length, 26);
+      chunks.push(local, nameBuf, data);
+      const cd = Buffer.alloc(46);
+      cd.writeUInt32LE(0x02014b50, 0); cd.writeUInt16LE(20, 4); cd.writeUInt16LE(20, 6);
+      cd.writeUInt32LE(data.length, 20); cd.writeUInt32LE(data.length, 24);
+      cd.writeUInt16LE(nameBuf.length, 28); cd.writeUInt32LE(offset, 42);
+      central.push(cd, nameBuf);
+      offset += local.length + nameBuf.length + data.length;
+    }
+    const cdBuf = Buffer.concat(central);
+    const eocd = Buffer.alloc(22);
+    eocd.writeUInt32LE(0x06054b50, 0); eocd.writeUInt16LE(parts.length, 8); eocd.writeUInt16LE(parts.length, 10);
+    eocd.writeUInt32LE(cdBuf.length, 12); eocd.writeUInt32LE(offset, 16);
+    return Buffer.concat([...chunks, cdBuf, eocd]);
+  };
+
+  const workbookAnon = await fetch(`${BASE}/api/review/workbook`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ fileName: "x.xlsx", dataBase64: buildReviewXlsx().toString("base64") }),
+  });
+  check(workbookAnon.status === 401, `★ 未登录上传 Excel → 401（实际 ${workbookAnon.status}）`);
+
+  const workbook = await post("/api/review/workbook", {
+    fileName: "一周视频数据.xlsx",
+    dataBase64: buildReviewXlsx().toString("base64"),
+    platform: "douyin",
+  });
+  check(workbook.status === 200, `★ 上传 Excel 解析 → 200（实际 ${workbook.status}）`, `错误：${workbook.json?.error || ""}`);
+  check(workbook.json?.sheetName === "视频数据", `  认出工作表名（实际 ${workbook.json?.sheetName}）`);
+  check(Array.isArray(workbook.json?.headers) && workbook.json.headers.includes("播放量"), "  返回表头");
+  check(workbook.json?.rows?.length === 1, "  返回数据行");
+  check(workbook.json?.suggestedMapping?.["播放量"] === "plays", "  ★ 建议的列映射认出了「播放量」");
+  check(workbook.json?.suggestedMapping?.["2s跳出率"] === "bounce2sRate", "  ★ 认出了「2s跳出率」");
+  check(workbook.json?.unmatchedHeaders?.includes("视频标题"), "  非指标列如实进 unmatchedHeaders");
+  check(Array.isArray(workbook.json?.missingMetrics), "  返回 missingMetrics（界面提示用户指认缺的列）");
+
+  // .xls 老格式必须给出能照做的提示（这是用户最可能的上传失败）
+  const xlsRes = await post("/api/review/workbook", { fileName: "旧格式.xls", dataBase64: Buffer.from("x").toString("base64") });
+  check(xlsRes.status === 400 && /另存为/.test(String(xlsRes.json?.error || "")),
+    `  ★ .xls 给出「另存为 .xlsx」的提示（实际 ${xlsRes.status}：${xlsRes.json?.error || ""}）`);
+
   // ── 6. 员工「临时分析」：不关联客户的第二入口 + **员工私有**隔离 ──────────────
   //
   // 这是本项目里唯一**员工私有**的数据（报告类按 managerId 隔离、`customers` 反而不隔离），
@@ -1231,6 +1366,81 @@ try {
   // 项目经理那两条仍要能用（放开员工不能把经理那条弄坏）。
   const mgrPlanList = await fetch(`${BASE}/api/account-plan-reports`, { headers: { Cookie: cookie } });
   check(mgrPlanList.status === 200, `  项目经理列全部账号规划仍 → 200（实际 ${mgrPlanList.status}）`);
+
+  // ── 4.1 复盘报告的权限口径（**与上面六个 store 不同**）────────────────────
+  // 用户 2026-09-30 拍板「经理端新模块 4 + 员工端只读/单条分析」，所以 4.1 **允许员工创建**。
+  // 但边界仍是「按客户」：不带 customerId 的读（按 id / 列全部）依然 manager-only。
+  const { saveVideoAnalysisReport } = await import("../api/_lib/videoAnalysisStore.js");
+  const seededReview = await saveVideoAnalysisReport({
+    ownerId: managerId,
+    customerId: SMOKE_CUSTOMER_ID,
+    customerName: "冒烟客户",
+    report: {
+      version: 1, reportType: "video_analysis", platform: "douyin", platformLabel: "抖音",
+      video: { title: "冒烟复盘视频", link: "" }, script: { text: "文案", charCount: 2 },
+      structureTags: { source: "manual", categoryName: "风险防御与合规建设", subcategoryName: "入职合规与制度完善" },
+      metrics: { plays: 5000 }, derived: {}, metricReadout: { engagement: [], professional: [] },
+      judgments: [], rules: [], structures: [{ key: "topicType", verdict: "optimize" }],
+      playBucket: { label: "有爆款潜力" }, suggestions: { items: [] },
+      analysisSource: "heuristic", warnings: [], analyzedAt: new Date().toISOString(),
+    },
+  });
+  const seededReviewId = seededReview?.id;
+  check(Boolean(seededReviewId), "（前置）种一份 4.1 报告");
+
+  const anonReview = await fetch(`${BASE}/api/video-analysis-reports?customerId=${SMOKE_CUSTOMER_ID}`);
+  check(anonReview.status === 401, `★ 未登录读 4.1 复盘 → 401（实际 ${anonReview.status}）`);
+
+  const empReviewByCustomer = await fetch(`${BASE}/api/video-analysis-reports?customerId=${SMOKE_CUSTOMER_ID}`, { headers: { Cookie: employeeA.cookie } });
+  const empReviewJson = await empReviewByCustomer.json().catch(() => null);
+  check(empReviewByCustomer.status === 200, `★ 员工按客户读 4.1 复盘 → 200（实际 ${empReviewByCustomer.status}）`);
+  check((empReviewJson?.items || []).some(item => item.id === seededReviewId), "  · 能看到该客户的报告");
+  check((empReviewJson?.items || []).every(item => !("report" in item)), "  · 列表不带正文");
+  check((empReviewJson?.items || []).every(item => !("managerId" in item)), "  · 元数据不含 managerId");
+
+  const empReviewById = await fetch(`${BASE}/api/video-analysis-reports?customerId=${SMOKE_CUSTOMER_ID}&id=${seededReviewId}`, { headers: { Cookie: employeeA.cookie } });
+  check(empReviewById.status === 200, `★ 员工按「客户 + id」读 4.1 正文 → 200（实际 ${empReviewById.status}）`);
+
+  // ★★ 不带 customerId 的按 id 读，员工必须被挡（否则是个越权读的口子）。
+  const empReviewNoCustomer = await fetch(`${BASE}/api/video-analysis-reports?id=${seededReviewId}`, { headers: { Cookie: employeeA.cookie } });
+  check(empReviewNoCustomer.status === 403, `★★ 员工不带客户按 id 读 4.1 → 403（不开放，实际 ${empReviewNoCustomer.status}）`);
+  const empReviewListAll = await fetch(`${BASE}/api/video-analysis-reports`, { headers: { Cookie: employeeA.cookie } });
+  check(empReviewListAll.status === 403, `★★ 员工列全部 4.1 → 403（不开放，实际 ${empReviewListAll.status}）`);
+
+  // ★ 与其它六个 store 的**有意差异**：4.1 允许员工创建（「员工端单条分析」）。
+  const empReviewPost = await fetch(`${BASE}/api/video-analysis-reports`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Cookie: employeeA.cookie },
+    body: JSON.stringify({
+      customerId: SMOKE_CUSTOMER_ID, customerName: "冒烟客户",
+      // 形状与上面 `seededReview` 的最小报告一致 —— 这里只验权限，不验内容。
+      report: {
+        version: 1, reportType: "video_analysis", platform: "douyin", platformLabel: "抖音",
+        video: { title: "员工自建的复盘", link: "" }, script: { text: "文案", charCount: 2 },
+        structureTags: { source: "manual" }, metrics: {}, derived: {},
+        judgments: [], rules: [], structures: [], playBucket: { label: "" },
+        suggestions: { items: [] }, analysisSource: "heuristic", warnings: [],
+        analyzedAt: new Date().toISOString(),
+      },
+    }),
+  });
+  check(empReviewPost.status === 201, `★ 员工保存 4.1 报告 → 201（4.1 允许员工做单条分析，实际 ${empReviewPost.status}）`);
+  const empCreatedId = (await empReviewPost.json().catch(() => null))?.item?.id;
+
+  // 员工只能删自己建的：删经理种的那份 → 404（deleteOne 按 managerId 收口）。
+  const empDeleteManagers = await fetch(`${BASE}/api/video-analysis-reports?id=${seededReviewId}`, {
+    method: "DELETE", headers: { Cookie: employeeA.cookie },
+  });
+  check(empDeleteManagers.status === 404, `★★ 员工删经理建的 4.1 报告 → 404（只能删自己的，实际 ${empDeleteManagers.status}）`);
+  if (empCreatedId) {
+    const empDeleteOwn = await fetch(`${BASE}/api/video-analysis-reports?id=${empCreatedId}`, {
+      method: "DELETE", headers: { Cookie: employeeA.cookie },
+    });
+    check(empDeleteOwn.status === 200, `★ 员工删自己建的 4.1 报告 → 200（实际 ${empDeleteOwn.status}）`);
+  }
+  // 经理那份仍在（没被员工的删除请求误伤）。
+  const stillThere = await fetch(`${BASE}/api/video-analysis-reports?id=${seededReviewId}`, { headers: { Cookie: cookie } });
+  check(stillThere.status === 200, `  经理种的那份还在（实际 ${stillThere.status}）`);
 
   // 删除与清空
   const deleteOne = await empPublish(`/api/publish-warehouse?customerId=${SMOKE_CUSTOMER_ID}&topicId=smoke-topic-1`, { method: "DELETE" });

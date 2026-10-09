@@ -136,8 +136,17 @@ export type TopicRefreshVideo = {
   authorName: string;
   publishDate: string;
   sourceText: string;
-  platform: "douyin" | "tiktok";
+  platform: "douyin" | "tiktok" | "wechat_channels";
   stats: { likes: number; comments: number; shares: number; bookmarks: number };
+  /**
+   * 视频号专用：媒体直链与解密密钥。
+   *
+   * 视频号**没有分享链接**，媒体在 CDN 上且被 Isaac64 加密，必须靠 decodeKey 在本地
+   * 解密后才能抽音频。所以它的转写路径与抖音不同 —— 见后端
+   * `transcribeTargets` 里按 platform 分流。
+   */
+  mediaUrl?: string;
+  decodeKey?: string;
 };
 
 export type TopicRefreshItem = {

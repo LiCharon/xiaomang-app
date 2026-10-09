@@ -850,6 +850,17 @@ export function TopicLibraryStage({
                     <AnalysisBadge label="2.1 分类" status={account.analyses.classification.status} />
                     <AnalysisBadge label="2.2 黄金三秒" status={account.analyses.goldThreeSeconds.status} />
                     <AnalysisBadge label="2.3 结尾钩子" status={account.analyses.endingHooks.status} />
+                    {/*
+                      标题库没有自己的第 4 份分析：标题类型就是黄金三秒那 8 个类型
+                      （好奇心/恐惧/愤怒/反差/痛点/兴趣/求知欲/欲望），所以标题配比
+                      直接复用 2.2 报告的「大类 × 类型」配比。
+                      这里用同状态徽章跟着 2.2 走，是为了让用户看得见「标题库是有的、
+                      它跟着 2.2 一起进来」，而不是以为标题功能没做。
+                    */}
+                    <AnalysisBadge
+                      label="标题库（同源 2.2）"
+                      status={account.analyses.goldThreeSeconds.status}
+                    />
                   </div>
                   <p className="mt-1.5 truncate text-xs text-slate-400">{account.accountUrl || "（未记录链接）"}</p>
                 </div>

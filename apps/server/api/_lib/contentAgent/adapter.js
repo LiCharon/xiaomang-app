@@ -29,6 +29,53 @@ export const getBenchmarkTopicsFromBody = (body) => {
   return Array.isArray(value) ? value.filter(item => item && typeof item === "object") : [];
 };
 
+/**
+ * 取「已提取好的脚本」——选题页（近 7 天）已经把完整脚本提出来并挂在 topic 上了，
+ * 二创**不该再解析+转写一遍**（那是 TikHub 解析 3~7s + 整条转写 10~45s 的重复劳动）。
+ *
+ * 接受两种形状，都是「链接 → 该链接的脚本」，按链接对齐（视频号那条用的是
+ * `wechat_channels:<id>` 这种 workflow key，与 `buildContentAgentInputs` 的键同一口径）：
+ *   - `parameters.benchmark_videos`: [{ link, script, title, scriptSource }]
+ *   - `parameters.scripts`: { [link]: "脚本原文" }
+ *
+ * ⚠️ 只接受**非空字符串**：空脚本不能被当成"已有脚本"，否则会把"没提取到脚本"
+ *    伪装成"已有脚本"，创作 Agent 拿到空文案——比重新转写更糟。
+ */
+export const getExtractedScriptsFromBody = (body) => {
+  const map = new Map();
+
+  const put = (link, script, title) => {
+    const key = String(link || "").trim();
+    const text = String(script || "").trim();
+    if (!key || !text) return;
+    if (!map.has(key)) map.set(key, { script: text, title: String(title || "").trim() });
+  };
+
+  const videos =
+    body?.parameters?.benchmark_videos ||
+    body?.parameters?.benchmarkVideos ||
+    body?._input?.benchmark_videos ||
+    body?._input?.benchmarkVideos ||
+    body?.benchmark_videos ||
+    body?.benchmarkVideos ||
+    [];
+  for (const video of Array.isArray(videos) ? videos : []) {
+    if (!video || typeof video !== "object") continue;
+    put(video.link || video.shareLink || video.url, video.script, video.title);
+  }
+
+  const scripts =
+    body?.parameters?.scripts ||
+    body?._input?.scripts ||
+    body?.scripts ||
+    null;
+  if (scripts && typeof scripts === "object" && !Array.isArray(scripts)) {
+    for (const [link, script] of Object.entries(scripts)) put(link, script, "");
+  }
+
+  return map;
+};
+
 const asStringArray = (value) => {
   if (!Array.isArray(value)) return [];
   return value.map(item => String(item || "").trim()).filter(Boolean);

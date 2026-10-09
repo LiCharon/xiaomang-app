@@ -1,14 +1,18 @@
 /**
  * 账号定位板块的模块结构 —— 全项目唯一的一份定义。
  *
- * 这个板块是「三个模块、两层」，不是一条平级的阶段直线：
+ * 这个板块是「四个模块、两层」，不是一条平级的阶段直线：
  *
  *   模块 1  对标账号分析 (1.2)  ┐
  *   模块 2  账号规划     (1.3)  ┘ 复用模块 3 的产出
- *   模块 3  选题库构建          ← 2.1 / 2.2 / 2.3 是它的内部子步骤
+ *   模块 3  选题库构建          ← 2.1 / 2.2 / 2.3 / 2.4 是它的内部子步骤
  *           ├── 2.1 对标账号分类分析
  *           ├── 2.2 黄金三秒库分析
- *           └── 2.3 结尾钩子库分析
+ *           ├── 2.3 结尾钩子库分析
+ *           └── 2.4 正式选题库与更新筛选
+ *   模块 4  复盘分析            ← 4.1 / 4.2，把真实数据倒回上游
+ *           ├── 4.1 视频数据分析
+ *           └── 4.2 账号数据分析
  *
  * 2026-09-17 之前这里被误解成「5 个平级阶段」，按 2.1→2.2→2.3→1.2→1.3 的顺序排成
  * 一条直线，于是 2.1～2.3 看起来像是 1.2/1.3 的前序阶段。实际上 2.x 是模块 3 的
@@ -18,8 +22,8 @@
  * 漂移：2.3 上线时要记得同时改两处）。现在统一从这里读。
  */
 
-export type ModuleId = "benchmark-analysis" | "account-plan" | "topic-library";
-export type StepId = "classification" | "gold" | "ending" | "library";
+export type ModuleId = "benchmark-analysis" | "account-plan" | "topic-library" | "review";
+export type StepId = "classification" | "gold" | "ending" | "library" | "video-review" | "account-review";
 
 /** 模块 3「选题库构建」内部的子步骤。 */
 export type ModuleStep = {
@@ -54,6 +58,9 @@ export const BENCHMARK_ANALYSIS_MODULE_ID: ModuleId = "benchmark-analysis";
 
 /** 模块 2「账号定位」的 id。同理：页面渲染与「已完成」标记都从这里取。 */
 export const ACCOUNT_PLAN_MODULE_ID: ModuleId = "account-plan";
+
+/** 模块 4「复盘分析」的 id。同理：不要在页面里硬编码这个字符串。 */
+export const REVIEW_MODULE_ID: ModuleId = "review";
 
 export const POSITIONING_MODULES: PositioningModule[] = [
   {
@@ -129,6 +136,42 @@ export const POSITIONING_MODULES: PositioningModule[] = [
         available: true,
         inputs: ["已保存的分类分析报告", "客户（选题库归属）", "对标账号链接"],
         outputs: ["正式选题库（客户级，多账号各自独立分类）", "新视频完整脚本与库内大类/小类标签", "可勾选的选题列表"],
+      },
+    ],
+  },
+  {
+    // 模块 4 是这条流程的**闭环**：前面三个模块都是「往里灌」（档案 → 选题库 → 规划），
+    // 只有它把**自己账号的真实数据**倒回上游，纠正下一轮的选题配比与文案结构配比。
+    //
+    // 🔴 数据来源要说清楚：分析的是**客户自己发布的视频**，不是选题库里的对标视频。
+    //    所以系统拿不到这些数据，只能由人工从平台后台导出 Excel 上传。
+    id: "review",
+    code: "4.x",
+    title: "复盘分析",
+    summary: "用自己账号的真实数据反推选题与文案结构的优化方向，把人工确认的结论变成下一轮的配比。",
+    reuses: "复用「选题库构建」的分类与配比",
+    available: true,
+    inputs: ["客户（复盘要用它的选题库做结构标签）", "从平台后台导出的视频数据 Excel", "视频文案"],
+    outputs: ["单条视频数据分析报告与优化建议", "一周账号数据分析周报与配比调整方案"],
+    steps: [
+      {
+        id: "video-review",
+        code: "4.1",
+        title: "视频数据分析",
+        summary: "上传单条视频的数据与文案，按平台标准值判断哪个结构拖了后腿，产出数据分析报告与优化建议。",
+        available: true,
+        inputs: ["视频文案", "该视频的平台后台数据（上传 Excel 并确认列映射）"],
+        outputs: ["数据分析报告（哪个指标高/低于标准值、对应哪个结构）", "四条文案结构的优化建议方案"],
+      },
+      {
+        id: "account-review",
+        code: "4.2",
+        // ⚠️ 二期。先把 4.1 这条链路打通（上传 → 判定 → 建议 → 落库），4.2 复用同一套解析与规则。
+        title: "账号数据分析",
+        summary: "上传一周账号数据，按流量池分层与结构标签拆解，产出周报与下周的选题/文案结构配比方案。",
+        available: false,
+        inputs: ["一周账号视频数据 Excel", "每条视频的选题类型与文案结构标签"],
+        outputs: ["数据分析周报（绝对数据 / 相对数据 / 流量池分层）", "下周选题配比与三类结构配比（人工确认后生效）"],
       },
     ],
   },

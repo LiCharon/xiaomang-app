@@ -37,6 +37,9 @@ import { getCustomer, listCustomers } from "../api/_lib/ipProfileStore.js";
 import { deleteTopicLibrary, getTopicCategoryDictionary, getTopicCategoryDictionaryForEmployee, getTopicLibrary, getTopicLibraryForEmployee, listTopicLibraries, listTopicLibrariesForEmployee, removeTopicLibraryAccount, saveTopicLibrary } from "../api/_lib/topicLibraryStore.js";
 import { appendTopicRefreshItems, deleteTopicRefreshSession, dictionaryFingerprint, getTopicRefreshSession, saveTopicRefreshCandidates } from "../api/_lib/topicRefreshSessionStore.js";
 import { PUBLISH_PHASES, runPublishPhase } from "../api/_lib/publishAgentRunner.js";
+import { runVideoAnalysis } from "../api/_lib/reviewAgentRunner.js";
+import { parseWorkbookPayload } from "../api/_lib/reviewWorkbook.js";
+import { deleteVideoAnalysisReport, getVideoAnalysisReport, getVideoAnalysisReportForCustomer, listVideoAnalysisReports, listVideoAnalysisReportsForCustomer, saveVideoAnalysisReport } from "../api/_lib/videoAnalysisStore.js";
 import { clearPublishSelections, deleteAccountTags, deleteCoverBase, deletePublishSelection, getAccountTags, getCoverBase, listPublishSelections, saveAccountTags, saveCoverBase, savePublishSelection } from "../api/_lib/publishWarehouseStore.js";
 import { COVER_TIERS } from "../api/_lib/publishWarehouse.js";
 import { fetchFansPortrait } from "../api/_lib/douyinFansPortrait.js";
@@ -133,6 +136,12 @@ const IMAGE_JSON_LIMIT = "24mb";
 const jsonWithImages = express.json({ limit: IMAGE_JSON_LIMIT });
 app.use("/api/publish-warehouse", jsonWithImages);
 app.use("/api/agent/publish", jsonWithImages);
+
+// 复盘分析的 Excel 上传走 **base64 + JSON**（不是 multipart），理由见 `_lib/reviewWorkbook.js`：
+// 本地 Express 与 Vercel 两套入口都要能跑，而 multer 只有前者有。
+// 同样只给这一条放宽；解码后的文件大小在 `_lib/reviewWorkbook.js` 里另卡 5MB。
+const REVIEW_JSON_LIMIT = "8mb";
+app.use("/api/review", express.json({ limit: REVIEW_JSON_LIMIT }));
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -302,7 +311,17 @@ app.post("/api/agent/benchmark-topic-refresh", async (req, res) => {
 
   try {
     const config = getContentAgentConfig();
-    const targets = videos.map(video => ({ videoId: video.id, link: video.link, title: video.title, platform: video.platform }));
+    // ⚠️ 这里**不能**只挑 id/link/title/platform：视频号没有 link，靠 mediaUrl + decodeKey
+    //    在本地解密后转写。漏了这两个字段，视频号到 transcribeTargets 里就会报
+    //    「缺少媒体地址」，而真正的原因是字段在路由层被丢掉了。
+    const targets = videos.map(video => ({
+      videoId: video.id,
+      link: video.link,
+      title: video.title,
+      platform: video.platform,
+      mediaUrl: video.mediaUrl,
+      decodeKey: video.decodeKey,
+    }));
     const videoIds = targets.map(target => target.videoId);
 
     if (phase === "transcribe") {
@@ -1096,6 +1115,133 @@ app.post("/api/account-plan-reports", async (req, res) => {
     return res.status(201).json({ success: true, item });
   } catch (error) {
     return res.status(500).json({ success: false, error: error instanceof Error ? error.message : "Account plan report request failed" });
+  }
+});
+
+// ── 模块 4　复盘分析（4.1 单条视频数据分析）──────────────────────────────────
+// 与 Vercel 版 api/agent/video-analysis.ts / api/video-analysis-reports/index.ts
+// 保持同构（§6.2⑤：两套后端必须同步改）。
+//
+// 分析的是**客户自己发布的视频**（数据由人工从平台后台导出后上传），
+// 所以这条链路不抓取、不转写，一次调用出报告；**报告不在这里落库**，
+// 用户看过、必要时改过之后再走下面的保存接口。
+//
+// 权限：4.1 对员工开放（用户 2026-09-30 拍板「经理端新模块 4 + 员工端只读/单条分析」），
+// 边界是「按客户」而不是「按所有人」——带 `customerId` 的读登录即可；
+// 按 id 取单份 / 列自己的全部仍要 manager，否则员工拿到 id 就能读别人的报告。
+
+// Excel 上传解析：只解析、不落库、不调模型 —— 结果给前端做「列映射确认」。
+app.post("/api/review/workbook", async (req, res) => {
+  if (!req.authUser) {
+    return res.status(401).json({ success: false, error: "请先登录" });
+  }
+  try {
+    const parsed = parseWorkbookPayload({
+      fileName: req.body?.fileName,
+      dataBase64: req.body?.dataBase64,
+      platform: req.body?.platform,
+      sheetName: req.body?.sheetName,
+    });
+    return res.json({ success: true, ...parsed });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "Excel 解析失败",
+    });
+  }
+});
+
+app.post("/api/agent/video-analysis", async (req, res) => {
+  if (!req.authUser) {
+    return res.status(401).json({ success: false, error: "请先登录" });
+  }
+  const customerId = String(req.body?.customerId || "").trim();
+  if (!customerId) {
+    return res.status(400).json({ success: false, error: "请先选择客户（复盘要用该客户的选题库做结构标签）" });
+  }
+  try {
+    const { report } = await runVideoAnalysis({ customerId, body: req.body });
+    return res.json({ success: true, report });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "视频复盘分析失败",
+      code: error?.code,
+    });
+  }
+});
+
+app.get("/api/video-analysis-reports", async (req, res) => {
+  const customerId = String(req.query?.customerId || "").trim();
+  if (!req.authUser) {
+    return res.status(401).json({ success: false, error: "请先登录" });
+  }
+  // 不带 customerId 的两条（按 id 取单份 / 列自己的全部）仍然 manager-only。
+  if (!customerId && req.authUser.role !== "manager") {
+    return res.status(403).json({ success: false, error: "该功能仅供项目经理使用" });
+  }
+  try {
+    const id = String(req.query?.id || "").trim();
+    if (customerId) {
+      if (id) {
+        const item = await getVideoAnalysisReportForCustomer({ customerId, id });
+        if (!item) return res.status(404).json({ success: false, error: "报告不存在或不属于该客户" });
+        return res.json({ success: true, item });
+      }
+      const limit = Number(req.query?.limit || 20);
+      return res.json({ success: true, items: await listVideoAnalysisReportsForCustomer({ customerId, limit }) });
+    }
+    if (id) {
+      const item = await getVideoAnalysisReport({ ownerId: req.authUser.id, id });
+      if (!item) return res.status(404).json({ success: false, error: "报告不存在或已被删除" });
+      return res.json({ success: true, item });
+    }
+    const limit = Number(req.query?.limit || 12);
+    return res.json({ success: true, items: await listVideoAnalysisReports({ ownerId: req.authUser.id, limit }) });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "复盘报告读取失败",
+    });
+  }
+});
+
+app.post("/api/video-analysis-reports", async (req, res) => {
+  if (!req.authUser) {
+    return res.status(401).json({ success: false, error: "请先登录" });
+  }
+  try {
+    const item = await saveVideoAnalysisReport({
+      ownerId: req.authUser.id,
+      customerId: req.body?.customerId,
+      customerName: req.body?.customerName,
+      report: req.body?.report,
+    });
+    return res.status(201).json({ success: true, item });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "复盘报告保存失败",
+    });
+  }
+});
+
+app.delete("/api/video-analysis-reports", async (req, res) => {
+  if (!req.authUser) {
+    return res.status(401).json({ success: false, error: "请先登录" });
+  }
+  const id = String(req.query?.id || req.body?.id || "").trim();
+  if (!id) return res.status(400).json({ success: false, error: "缺少报告 id" });
+  try {
+    // 按 managerId 收口：员工只能删自己建的（4.1 允许员工创建）。
+    const result = await deleteVideoAnalysisReport({ ownerId: req.authUser.id, id });
+    if (!result.deleted) return res.status(404).json({ success: false, error: "报告不存在或已被删除" });
+    return res.json({ success: true });
+  } catch (error) {
+    return res.status(error?.status || 500).json({
+      success: false,
+      error: error instanceof Error ? error.message : "复盘报告删除失败",
+    });
   }
 });
 

@@ -21,10 +21,12 @@
 >
 > ```bash
 > cd /Users/ypc/Desktop/归档项目/xiaomang
-> npm test               # 期望 382 passed / 0 failed
-> npm run build          # 期望成功
-> npm run verify:routes  # 期望 255 passed / 0 failed（需要本地 MongoDB）
-> npm run dev            # Express(8787) + Vite（⚠️ 端口可能不是 5173，见 §0.8-E-14）
+> npm test               # 期望 553 passed / 0 failed
+> npm run build          # 期望成功（⚠️ vite build 只转译，**不做类型检查**，见 §0.9-E-1 / §0.10-E-1）
+> npm run verify:render  # 期望 16 passed / 0 failed（前端真渲染检查，见 §0.10-C）
+> npm run verify:routes  # 期望 299 passed / 0 failed（需要本地 MongoDB）
+> npm run dev            # Express(8787) + Vite；⚠️ Vite 只监听 [::1]:5173（IPv6），
+>                        #    `curl 127.0.0.1:5173` 连不上不代表服务没起
 > ```
 >
 > - **一个前端**（`apps/web`，React 18 + Vite + Tailwind）：`/manager/*` 经理端、
@@ -32,15 +34,17 @@
 > - **一个后端**（`apps/server`，Express + 原生 mongodb 驱动）：员工/定位 API 在
 >   `src/index.js` + `api/**`；经理端在 `src/manager/*`（挂在 `/api/management/*`）。
 > - **一个库**：本地 MongoDB（`127.0.0.1:27018`，Docker 容器 `xiaomang-local-mongo-1`），
->   20 集合 / 226 文档，已从线上 Atlas 迁移完成。
+>   20 集合 / 366 文档，已从线上 Atlas 迁移完成。
 > - **`.env` 在 `apps/server/.env`**（不在根目录）—— 从根跑脚本读不到 `MONGODB_URI`，
 >   这不是 bug 是 workspace 结构。
+> - ⚠️ **工作树很脏且混了三轮改动**：`git status` 有 **31 改 + 25 项新增**（其中两项是目录），
+>   既有 §0.9 的选题轮、又有**腾讯云部署轮**、还有本轮的复盘轮（见 §0.10-F）。提交前先分开。
 >
-> ## 🔴 现在待办看 §0.8-D（第九轮）
+> ## 🔴 现在待办看 §0.10-D（第十一轮）
 >
-> 最近一轮（3.1 出图 + 发布仓落地）的**待办与卡点**在 **§0.8-D**：
-> 真人模板出图被网关 403、出图域名 DNS 抖动、飞书「原文案」列口径待确认、
-> 飞书导出未用真实凭据跑过。
+> 最近一轮（**复盘分析模块 4 的一期：4.1 单条视频数据分析**）的待办与卡点在 **§0.10-D**。
+> ⚠️ **部署轮已经做完了，但 §0.9 及更早的正文完全没记** —— 见 **§0.10-C**，
+> 在信那些章节之前先看这一节。
 >
 > 安全上仍有一条没做：**轮换 / 停用 Atlas 密码**（见 §0.7）。
 > git 历史里的明文凭据已清除、并装了提交前扫描钩子；但**当前仍在用同一个密码**。
@@ -48,13 +52,502 @@
 >
 > ## 各节导读
 >
-> - **§0.8** 第九轮：发布仓 3.1～3.3 落地 + 一类出图打通（**最新，建议先读**）
+> - **§0.10** 第十一轮：复盘分析模块 4（4.1 落地）+ **腾讯云部署补记**（**最新，建议先读**）
+> - **§0.9** 第十轮：选题生成页大修
+> - **§0.8** 第九轮：发布仓 3.1～3.3 落地 + 一类出图打通
 > - **§0.7** 第八轮修复结果 + code review（四项问题全部已修）
 > - **§0.6** 合并后的审查结论（四项问题的原始证据）
 > - **§0.5** 架构合并方案（已按其执行，保留作背景）
 > - §0.3 发布仓（封面/发布文案/发布标签）· §0.4 1.3 权限按客户开放
 > - §0.2 大类配比回流二创 · §0.0 打标签体验改造 · §0.1 选题库口径
-> - §7 接手后的第一步 · §6 绝对不要再踩的坑 · §8 当前基线（**第八轮快照，数字已过期，见 §0.8**）
+> - §7 接手后的第一步 · §6 绝对不要再踩的坑 · §8 当前基线（**第八轮快照，数字已过期，见 §0.10**）
+
+---
+
+## 0.10 ✅ 第十一轮：复盘分析（模块 4 / 4.1 落地）+ 腾讯云部署补记（2026-09-30）
+
+> 自包含。读完这一节就能接手，不必先读 §0.9 及以前。
+> ⚠️ 本项目文档有「反复滞后于代码」的前科（**这一轮又抓到一次，见 C**），关键结论请拿代码复核。
+
+### 0. 三十秒结论
+
+```text
+项目路径        /Users/ypc/Desktop/归档项目/xiaomang
+git             42 个提交；⚠️ 工作树**很脏**：31 改 + 25 项新增（混了三轮改动，见 F）
+npm test        553 passed / 0 failed
+npm run build   成功（vite build，**不做类型检查**）
+npm run verify:render   16 passed / 0 failed   ← 本轮新增，前端真渲染检查
+npm run verify:routes   299 passed / 0 failed（需本地 MongoDB + apps/server/.env）
+线上            https://124.223.15.17/  200（腾讯云，IP 入口；域名被拦，见 C）
+```
+
+**这一轮的主线**：把「复盘分析」立项并落地**一期 4.1 单条视频数据分析** ——
+这是本项目**第一次让数据倒流回上游**（前面所有链路都是单向的）。
+
+**✅ 已完成并真跑通**：Excel 上传 + 列映射确认 → 后端按平台标准值**实算判定** →
+Agent 只写「为什么 / 怎么调」→ 报告落库 → 经理端模块 4 / 4.1 阶段组件。
+（4.2 账号周度分析是二期，界面上如实标「待实现」）
+
+**🔴 本轮最大的三个坑**（详见 §E）：**手写的 Electron/无头浏览器在本机沙箱里起不来**
+（改用 SSR 真渲染替代，并把它做成了 `npm run verify:render`）；
+**子代理新建的文件默认是 600 权限**（正是部署轮那个 EACCES 事故的同款根因）；
+**codegraph 的 MCP 仍然绑着别的项目**（必须用 CLI）。
+
+---
+
+### A. 这一轮在做什么（一句话）
+
+用户口径：**「复盘分析 —— 真正能让本项目从自动化新媒体工具，变为可以自我更新迭代的
+agent 系统的重要核心」**。链路分两条：**选题优化复盘**（4.2，周度）与
+**单个视频数据分析**（4.1，已做）；两者共用同一套「数据 → 判定 → 建议 → 记忆」。
+
+**🔴 一个必须记住的前提（用户本轮明确纠正过一次）**：
+4.1/4.2 分析的是**客户自己发布、系统从来没见过的视频**，不是选题库里的对标视频。
+所以这些数据**系统拿不到、也不能自动补**，只能由人工从平台后台导出后上传。
+选题库在这条链路上的作用只有两个：提供大类/小类**词典**，以及（二期）承接复盘后的新配比。
+
+### B. ✅ 已完成（按「用户能看到什么」列）
+
+| # | 用户能看到什么 | 关键文件 |
+|---|---|---|
+| 1 | 经理端账号定位多了**模块 4「复盘分析」**，含 4.1 / 4.2 两个子步骤 | `web/src/app/accountPositioningModules.ts`、`AccountPositioningPage.tsx` |
+| 2 | 上传 Excel → **逐列确认「这列是什么」**（自动识别只给建议） | `web/src/app/VideoAnalysisStage.tsx`、`api/_lib/reviewWorkbook.js` |
+| 3 | 判定表：每个指标**实测值 / 标准线 / 判定 / 说明**，并把「这个数字代表什么」标在旁边 | `api/_lib/reviewMetrics.js`、`VideoAnalysisStage.tsx` |
+| 4 | 四大结构（选题类型 / 3s / 标题 / 结尾钩子）各自的**可复用 / 需要优化**结论与依据 | `api/_lib/videoAnalysis.js` |
+| 5 | 「为什么 / 怎么调」两栏建议；**模型没给就如实显示「待人工补充」**，不编套话 | `contentAgent/prompts.js`、`reviewAgents.js` |
+| 6 | 报告落库、按客户回看、可删除（员工也能做单条分析） | `api/_lib/videoAnalysisStore.js` |
+
+**关键数字（都是实算，可复现）**：互动率 =（赞+评+转+藏）/播放量；
+平均播放率 = 平均播放时长/视频时长；播放量 12500 → 「爆款」档；全优数据 → 四大结构全判「可模仿复用」。
+
+### C. 🔴 本轮纠正的两处「文档与现实不符」
+
+**C-1. 腾讯云部署**其实早在 §0.9 写完后当天就做完了，但 HANDOFF 一个字没记。**
+现状（取自 `docs/DEPLOY-TENCENT.md`，并已实测复核）：
+
+| 项 | 值 |
+|---|---|
+| 服务器 | `124.223.15.17`（腾讯云 CVM，2 vCPU / 1.9G） |
+| 代码目录 | `/opt/xiaomang`，`docker compose`（容器 `xiaomang-app-1` / `xiaomang-mongo-1`） |
+| 当前入口 | **`https://124.223.15.17/`**（IP 证书，6 天续期一次）—— 本轮实测 200、TLS 校验通过 |
+| 域名 | `xiaomang.cloud` **被腾讯云按备案策略拦截**，服务器端无解（详见 `docs/DEPLOY-TENCENT.md` §7） |
+| 数据 | 容器内 MongoDB 8.0，**20 集合 / 366 文档**，与本地一致 |
+
+**C-2. `docs/DEPLOY-TENCENT.md` 是一份完整、可靠、20+ 项实测的部署手册**，
+新会话要动服务器**先读它**。部署中还修了 5 个真 bug（源文件 600 权限致容器 EACCES、
+apt 源、compose 项目名、SPA 吃掉 robots/sitemap、迁移被空集合拒绝）。
+
+### D. 🔴 卡在哪 / 待办（按优先级）
+
+**D-1. 🔴 项目仍然没有类型检查（承接 §0.9-D-1，本轮再次被它咬到）**
+`build` 只有 `vite build`。本轮实测：`node_modules` 里**已经有 typescript 5.9.3**，
+直接 `tsc --noEmit` 就能用（无需安装）。本轮新增的前端文件跑过一遍，**0 错误**；
+存量错误（`accountPlan.ts` 的 `DocxBlock`、`api.ts` 的 `import.meta.env` 等）仍在。
+→ **建议**：加 `tsconfig.json` + `npm run typecheck`，把这批清掉。
+
+**D-2. 4.2 账号数据分析是二期，未做。** 界面上如实标「待实现」。
+它的两块产出——**选题配比**与**三类结构配比**——需要先解决「写新配比」这个缺口（见 D-3）。
+
+**D-2b. 「复盘记忆」闭环未打通（二期核心）。**
+`titleLibrary.js:10` 早就写着「每周复盘：按用户最终选中的标题类型标签调下一次的配比」，
+但**全仓只有这一句注释、无实现**。当前配比是**读时从报告实算**的
+（`topicCreativeAdaptation.js` 的 `indexBreakdownByCategory`），
+没有任何 PATCH/PUT 通路，也没有版本历史 —— 「第一周配比」和「第二周配比」当前无法共存。
+
+**D-3. 数据来源已确认：只能人工上传，不要考虑自动抓取。**（用户 2026-09-30 明确）
+
+**D-4. 列映射的「真实样例」还没拿到。** 本轮的自动识别是基于用户需求里列的指标名写的
+同义词表；拿到真实 Excel 后应把它补进 `reviewMetrics.js` 的 `aliases`。
+**界面本身有兜底**（认不出就让用户指认），所以这不是阻塞项。
+
+**D-5. 长期未做（承接 §0.9-D / §0.8-D）**：真人模板出图 403、飞书导出未用真实凭据跑过、
+Atlas 密码未轮换、宝塔 8888 端口对公网开放、SSH 密码登录未关（见 `docs/DEPLOY-TENCENT.md` §5）。
+
+### E. 🔴 绝对不要再踩的坑（本轮新增，每条都带症状）
+
+**E-1. 🔴🔴 `vite build` 不做类型检查 —— 本轮又验证了一次它是真会咬人的。**
+用户给的两个历史事故（缺 import、TDZ）都是这个根因。本轮因此**新增了一条防线**（见 E-2）。
+
+**E-2. ✅ 新增 `npm run verify:render` —— 前端真渲染检查，改前端后必须跑。**
+做法：用 esbuild 把 `AccountPositioningPage` / `VideoAnalysisStage` 连同 React
+打成**单份 CJS**（单实例 React，否则 `Invalid hook call`），再 `renderToString` 渲染并断言。
+**变异验证过**：把 `MODULE_ICONS` 的 `review` 键或 `STEP_ICONS` 的 `video-review` 键删掉，
+它会红并且报出准确原因
+（`Element type is invalid ... got: undefined`）—— 而 `npm run build` **照样绿**。
+⚠️ 它**抓不到** `useEffect`、事件处理器与真实请求，改了交互仍要人工真点一次。
+
+**E-3. 🔴 本机没有任何可用的无头浏览器 —— 别再试了。**
+`Google Chrome --headless=new / --headless=old`（`/Applications/Google Chrome.app/...`）
+在本机沙箱里**直接挂起不返回**（crashpad 写 `~/Library/...` 被拒 → GPU 进程退出）。
+CDP 那条路也走不通：Chrome 需要 `--remote-allow-origins=*` 才接受 WS 连接，
+而连上之后 undici 的 WebSocket 消息投递在本机也不可用。
+→ **要「看一眼」就用 E-2 的 SSR 检查**（它覆盖了白屏那一类），
+需要真交互时再说 —— 别在这上面重复烧时间。
+
+**E-4. ⚠️ 本机新建文件默认 `600` 权限 —— 这正是部署轮 EACCES 事故的同款根因。**
+本轮子代理新建的 6 个文件、以及我新建的若干文件都是 `-rw-------`。
+Docker 镜像里非 root 的 `node` 用户读不到就会**启动即崩**。
+→ **每轮结束前跑一次**：`find apps packages -type f ! -perm -o=r | grep -v '\.env'`
+（应当为空）。修正用 `chmod a+r <文件>`。
+→ 🔴 **不要图省事写 `chmod -R a+rX apps packages`** —— 那会把 `apps/server/.env`
+（含 MongoDB 与各 API 密钥）一起变成全局可读。`.env` 必须保持 `600`，
+要修只修源码与测试文件。
+
+**E-5. 🔴 codegraph：CLI 是对的，MCP 仍然是错的（§0.9-E-13 依然成立）。**
+本轮实测：`codegraph status` 正确显示本项目（227 文件 / 4878 节点 / 11149 边，
+`Index is up to date`），`codegraph files` 给出的目录树就是本仓库。
+**但 `mcp__codegraph__*` 系列工具查到的仍是别的项目**，别用。
+CLI 常用：`codegraph status` / `codegraph files` / `codegraph query "<符号>"` /
+`codegraph callers <符号>` / `codegraph impact <符号>`。
+
+**E-6. 🔴 百分比列的三种写法必须都认，认错一列整份报告全错且用户看不出来。**
+Excel 里同一列可能是 `0.32`、`32`、`"32%"`。`reviewMetrics.js` 的 `toRate` 统一成
+「带 % ⇒ 除以 100；纯数字 > 1 ⇒ 视作百分数除以 100」。
+**由此得出一条口径约定**：想填 1.5% 就写 `1.5`；想填 150% 得写 `150`（写 1.5 会被读成 1.5%）。
+越界值**不夹取**，如实标「数据可疑」。
+
+**E-7. 🔴 判定结论绝不能交给模型 —— 这是本项目第三次强调同一条纪律了。**
+4.1 的做法：**先后端实算**（阈值表 → 判定），把结论**作为输入喂给模型**，
+模型只写「为什么 / 怎么调」。归一化层会核对模型有没有自报结论，
+**说反了就丢弃并记 warning**（有一对一测试钉着）。
+
+**E-8. 加平台/指标时，先看 `reviewMetrics.js` 是不是已经有第二份定义。**
+抖音与视频号的指标集**不同**（抖音有 2s跳出率/5s完播率/收藏；视频号是 3秒以上播放率/红心），
+阈值也不同（视频号的完播率**同时**影响选题类型与结尾钩子，抖音不是）。
+这些差异全部收敛在一张 `RULE_TABLE` 里，前端与提示词都从这里取，别另写。
+
+**E-9. 文件上行走 base64 + JSON，不走 multipart。**
+项目里唯一的 multipart 先例（`src/manager/ai.js` 的 `extract-document`，用 multer）
+是**本地 Express 专有**的 —— Vercel 那套没有 multer、`readBody` 也只解析 JSON。
+为守住「两套后端必须同步」，复盘的上传走 `{ fileName, dataBase64 }` 的 JSON。
+代价是 body 大 1.33 倍：只给 `/api/review` 放宽到 8mb，**不要动全局 1mb**，
+且解码后的文件另卡 5MB（Vercel 请求体硬上限 4.5MB，抬本地救不了线上）。
+
+**E-10. Excel 读取器是零依赖手写的，不要引包。**
+`api/_lib/xlsxWorkbook.js` 只用 `node:zlib` 的 `inflateRawSync` 解 DEFLATE。
+**踩过的坑**：zip 中央目录里 rels 的**属性顺序不固定**（Excel 写 `Id` 在前、
+openpyxl 写 `Target` 在前），用固定顺序的正则解析会得到空结果 —— 必须逐元素分别取属性。
+
+### F. 工作树状态（提交前必看）
+
+`git status`：**31 改 + 25 项新增**（其中两项是目录），混了**三轮**改动，提交时应分开：
+
+| 轮次 | 大致内容 |
+|---|---|
+| §0.9 选题轮（未提交） | `titleLibrary.js`、`topicAnalysisPipeline.ts`、`benchmarkTopicRefresh.js`、`App.tsx`、`ContentPage.tsx` 等 |
+| 部署轮（未提交） | `Dockerfile`、`.gitignore`、`deploy/compose.tencent.yml`、`docs/DEPLOY-TENCENT.md` |
+| **§0.10 复盘轮（本轮）** | `_lib/review*.js`、`_lib/videoAnalysis*.js`、`_lib/xlsxWorkbook.js`、`api/agent/video-analysis.ts`、`api/video-analysis-reports/`、`api/review/workbook.ts`、`scripts/verify-web-render.mjs`、前端 `VideoAnalysisStage.tsx` / `reviewApi.ts` 等 |
+
+### G. 怎么验证（命令 + 期望数字）
+
+```bash
+cd /Users/ypc/Desktop/归档项目/xiaomang
+npm test               # 553 passed / 0 failed
+npm run build          # 成功（⚠️ 不做类型检查，绿 ≠ 对）
+npm run verify:render  # 16 passed / 0 failed ← 前端真渲染检查（本轮新增）
+npm run verify:routes  # 299 passed / 0 failed（需本地 MongoDB + apps/server/.env）
+```
+
+**本轮新增的测试**：
+- `tests/review-metrics.test.mjs` —— 阈值口径、平台差异、单位归一化、表头识别（40 项）
+- `tests/video-analysis.test.mjs` —— 4.1 组装、模型结论核对、降级、warnings（21 项）
+- `tests/review-workbook.test.mjs` —— Excel 解析与列映射建议（13 项）
+- `tests/xlsx-workbook.test.mjs` —— 零依赖 xlsx 读取器（24 项，子代理产出）
+- `tests/video-analysis-store.test.mjs` —— 存储与权限边界（3 项，需真实 MongoDB）
+- `scripts/verify-server-routes.mjs` —— 新增 44 条冒烟（含 Excel 上传与 4.1 权限矩阵）
+
+**这些测试都做过变异验证**（把被保护的代码改坏，确认测试真的会红）——
+不会红的测试是负资产，见 §0.9-E-3。
+
+### H. 下一会话第一步（建议顺序）
+
+1. **先跑 §G 的四条命令**，确认基线（553 / build / 16 / 299）与工作树状态。
+2. **问用户要不要把这三轮改动分开提交**（见 §F）。
+3. **优先做 §D-1（加类型检查）** —— typescript 已经在 `node_modules` 里，代价最低。
+4. **二期做 4.2**，但要先解决 §D-2b 的「写新配比」缺口：
+   复盘的产物是**处方**（我们下周该怎么做），而现有 `categoryBreakdown` 是**诊断**
+   （对标账号过去怎么做的）—— **语义不同，不能覆盖**，必须新建一层客户级的
+   「复盘记忆」并按优先级被二创读取。
+
+---
+
+## 0.9 ✅ 第十轮：选题生成页大修（2026-09-28）
+
+> 自包含。读完这一节就能接手，不必先读 §0.8 及以前。
+> ⚠️ 本项目文档有「反复滞后于代码」的前科（已多次），**关键结论请拿代码复核**。
+
+### 0. 三十秒结论（新任会话读这一段就能开工）
+
+```text
+项目路径        /Users/ypc/Desktop/归档项目/xiaomang
+git             42 个提交；⚠️ 工作树**脏**：22 个文件已改、4 个新文件未跟踪，本轮改动**全部未提交**
+npm test        452 passed / 0 failed
+npm run build   成功（vite build，**不做类型检查**，见 §E-1）
+npm run verify:routes  255 passed / 0 failed（需本地 MongoDB + apps/server/.env）
+本地库          mongodb://127.0.0.1:27018/xiaomang，20 集合 / 366 文档
+未提交的新文件  apps/server/api/_lib/titleLibrary.js
+                apps/server/tests/title-library.test.mjs
+                apps/server/tests/topic-analysis-pipeline.test.mjs
+                apps/web/src/app/topicAnalysisPipeline.ts
+```
+
+**这一轮的主线**：员工侧「选题生成页」（`/topics`）从"能筛能看"做成**真能出脚本+标签**，
+并把它与二创页、视频号平台打通。
+
+**✅ 已完成并真跑通**：标题库二创、自定义点赞门槛（含口径从 `>` 改 `>=`）、
+视频号选题在选题页提取脚本 + 二创直接复用（**用户 2026-09-28 实测确认"OK了这次成功了"**）、
+打标签改攒批（方案二）。
+
+**🔴 本轮最大的两个坑**（都是我自己引入、又自己修掉的，详见 §E）：
+「React effect 依赖含自己会写的 state」导致**界面永久卡死而后端正常干活**；
+「项目无类型检查」导致**未定义标识符构建期不报错**（踩了两次，其中一次是别人早就埋下的必崩 bug）。
+
+---
+
+### A. 这一轮在做什么（一句话）
+
+把「内容生成页」的这一整套经验（**前期构建库 → 生成时匹配库类别做二创**）搬到
+**标题**上，并把「选题 → 脚本 → 标签 → 二创」这条链路的**性能、稳定性、平台覆盖**补齐。
+
+用户口径的原话（按时间顺序）：
+1. 「内容生成页中的标题现在也需要做一下改动，同样在前期需要构建标题库，然后内容生成页中生成标题时，匹配标题库类别进行二创生成」
+2. 「过滤条件默认是点赞数大于等于 100。现在加一个功能支持用户自定义过滤筛选条件」
+3. 「视频号获取的选题需要解码下载…把二创部分提取脚本的功能前移到选题生成页」
+4. 「选题现在是所有都处理完之后再显示，还是想抖音平台的方式一样，一条处理完之后就直接显示」
+5. 「帮我上方案二吧」（后端批量并行 agent）
+
+---
+
+### B. ✅ 已完成（按「用户能看到什么」列）
+
+| # | 用户能看到什么 | 关键文件 | 备注 |
+|---|---|---|---|
+| 1 | **内容生成页标题按库类别二创**：标题类型直接复用 2.2 那 8 个类型（好奇心/恐惧/愤怒/反差/痛点/兴趣/求知欲/欲望），配比按「大类 × 类型」 | 新增 `api/_lib/titleLibrary.js`；`contentAgent/prompts.js` 加 `CREATIVE_TITLE_PROMPT` | 2.4 建库页加了「标题库（同源 2.2）」徽章，让用户看得见它不是没做 |
+| 2 | **2.3 结尾钩子不再重复调 TikHub** | `contentAgent/providers.js` 的 `resolveCache` | TikHub 解析 3~7s，同一链接只解析一次 |
+| 3 | **点赞门槛可自定义**（含 0），默认 100，口径 `>=` | `web/src/app/topicContentRules.ts`、`App.tsx`、`api/_lib/benchmarkTopicRefresh.js` | ⚠️ 口径从 `>` 改成 `>=`，见 §E-6 |
+| 4 | **视频号选题能在选题页提取脚本**，二创直接复用、不再现场解密转写 | `goldThreeSecondTranscripts.js`、`platformAdapters.js`、`ContentPage.tsx` | 靠 `mediaUrl`+`decodeKey`，**没有 link**，见 §E-4 |
+| 5 | **列表逐条/逐批往外冒**，不再是"全部跑完才显示" | `web/src/app/topicContentAnalysis.ts` | 见 §E-5（根因不在网络，在上报时机） |
+| 6 | **打标签改攒批**（方案二）：一次模型调用覆盖 4 条 | `topicAnalysisPipeline.ts` 的 `createBatcher` | 后端本来就能批量，只改了前端编排 |
+| 7 | **从二创页返回不再重跑分析**（不重复花钱） | `topicAnalysisPipeline.ts` 的 `canReuseTopicAnalysis` | 范围指纹 = 客户 + 时间窗口 + 这批视频 id |
+| 8 | 去掉「已提取脚本」徽章与「（真实转写）」后缀 | `App.tsx` | 纯外观 |
+| 9 | **ASR 换豆包录音文件识别 2.0**（异步 submit+poll，只收 URL） | `contentAgent/providers.js` 的 `recognizeDoubaoFileAudio` | 与旧的 flash（同步、base64）是两条通道 |
+| 10 | **选题库只读分类词典**，不再拉 2.2/2.3 报告 | `topicLibraryStore.js` 的 `CATEGORY_DICTIONARY_PROJECTION` | 实测 253KB → 8.2KB，**省 96.7%** |
+
+---
+
+### C. 🐛 本轮抓到的真 bug（**多数不是本轮引入的，是早就存在的**）
+
+**C-1. 🔴 界面永久卡死，而后端在正常干活（本轮最严重，我自己引入的）**
+选题列表已列出、界面却永久停在「正在读取本账号的选题库…」，不报错不推进。
+**判据**：服务端日志显示 DeepSeek 打标签正在正常调用 —— 后端跑完了，前端把每次更新都扔了。
+根因见 §E-2。
+
+**C-2. 🔴 「删除 1.2 报告」必然抛 `ReferenceError`（早就存在、一直没人发现）**
+`deleteBenchmarkProfileReport` 在 `reportApi.ts:296` 定义并导出，`BenchmarkProfileStage.tsx`
+正确导入了，但 `AccountPlanStage.tsx:782` **调用了却没导入** → 点击即崩。
+**靠临时装 TypeScript 跑 `tsc --noEmit` 才发现**（本项目没有类型检查，见 §E-1）。已修。
+
+**C-3. 🔴 视频号选题在选题页被静默丢光（三处独立原因，叠在一起）**
+1. 前端 `transcribableVideos` 一律要求 `link` —— 视频号**没有分享链接**；
+2. 后端 `benchmarkTopicRefresh.js` 有**自己的一份** `normalizePlatform`，把 `wechat_channels`
+   压成了 `douyin`，随后被"抖音必须有 link"再丢一次；
+3. 路由 `src/index.js` 自己拼 `targets` 时只挑 `id/link/title/platform`，**漏了 mediaUrl/decodeKey**。
+症状统一是「选题列表有内容，但脚本和标签一直不动」，且不报错。已全部修掉。
+
+**C-4. 🔴 媒体流断开会把 Node 进程打死（不是普通失败）**
+终端 `Unhandled 'error' event` + `UND_ERR_SOCKET: other side closed` → `Failed running 'src/index.js'`
+→ 前端 `socket hang up` + 长时间无结果。
+根因：`Readable.fromWeb(response.body)` 建好后，消费侧的 `inputStream.on("error")` 要等
+**ffmpeg 启动**才挂上；这段窗口里断流就没人接。已加 `guardStreamErrors`。
+
+**C-5. 后端点赞门槛的"默认值"其实变成了 0**
+`resolveMinLikes = Math.max(TOPIC_REFRESH_MIN_LIKES, asNumber(value))`。
+`asNumber(undefined)` 是 0 —— 下界从 100 放开到 0 之后，**不传门槛就变成"不限点赞"**，
+比业务默认（100）宽松得多，且报告里回显 `minLikes: 0` 看起来很"正常"。已拆成两个常量。
+
+**C-6. 前后端对非法点赞的处理不一致（同一批数据筛出不同结果）**
+前端 `Number("abc")` → `NaN`，而 `NaN >= 0` 是 **false**（挡住）；后端 `asNumber` 归一化成 0（放行）。
+已加 `normalizeLikes` 与后端同口径。
+
+**C-7. 所有请求都没有超时**
+`fetchWithRetry` 完全依赖 `fetch`，而 **`fetch` 永不超时**。选题页每一步都 `await` 在它上面，
+任何请求悬挂（服务端重启、连接半开）界面就永久停在那一句文案上。已加 330s 超时并报成"请求超时"。
+
+**C-8. 提前 return 不回调 `onProgress` → 界面停在上一次文案**
+`runTopicContentAnalysis` 的每个提前返回只把结论写进**返回值**，没推给界面。
+用户看到的是"卡住"而不是"原因"。已修（**每个提前返回都必须回调**）。
+
+---
+
+### D. 🔴 卡在哪 / 待办（按优先级）
+
+**D-1. 🔴 项目没有类型检查（结构性风险，建议优先处理）**
+`build` 只有 `vite build`，**没有 TypeScript、没有 tsconfig、没有任何 linter**。
+所以"标识符未定义 / 导入漏了"这类错误**构建期完全不报错**，运行时才炸。
+本轮我因此踩了两次（一次自己写的、一次 C-2 那个必崩 bug）。
+代价已实测：临时装 `typescript@5` 跑 `tsc --noEmit`，**只有 22 个错误**，且多数是类型漂移
+（`DocxBlock` 类型不存在、`CoverCandidate` 只在类型位置、`fontSizePx` 有 `|| 48` 兜底、`import.meta.env` 缺 vite/client 类型）。
+→ **建议**：加 `typescript` devDependency + `tsconfig.json` + `npm run typecheck`，并把这 22 个清掉。
+（我临时装过 typescript，`--no-save`，**package.json 未被改动**；`node_modules` 里可能还留着，`npm install` 会清掉。）
+
+**D-2. 视频号的真实性能未测量**
+视频号媒体在 CDN 上且被 Isaac64 加密，**用不了 `doubao-file`（URL 直取）**，只能走本地解密 + ffmpeg。
+实测单条 ffmpeg 抽取 **25~86 秒**（波动取决于 CDN 当时速度），ASR 只花 2.7s。
+→ 它注定比抖音慢，这是加密格式的固有代价，**不是编排能解决的**。
+→ 若要提速，方向是**本地缓存已下载的视频**（同一视频重复转写不再重下），**不是**调超时或换编码器（见 §E-7）。
+
+**D-3. 攒批打标签的准确率未验证**
+`TOPIC_TAG_BATCH_SIZE = 4` 意味着一次 prompt 里塞 4 条视频的信息。
+**若发现标签串了（A 视频的标签跑到 B 上），把它降到 2 或 1** —— 这个值是权衡，不是定论。
+
+**D-4. 本轮改动全部未提交**
+22 改 + 4 新增都在工作树里，`git status` 能看到。新会话开工前先确认要不要提交。
+
+**D-5. 未验：2.1 对标账号分析不支持视频号**
+`benchmarkAnalysis` 里没有任何 `wechat_channels` 分支，只吃抖音/TikTok。
+→ 所以**没法把视频号账号加进选题库当对标账号**，库只能由抖音账号建。
+用户 2026-09-28 确认「两个平台的分类树对得上」，所以目前共用一份库是**正确行为**，不是缺口。
+若将来对不上，就要让 2.1 支持视频号（**优先这条**，而不是给库加平台维度）。
+
+**D-6. 长期未做（承接 §0.8-D）**：真人模板出图 403、出图域名 DNS 抖动、飞书导出未用真实凭据跑过、
+Atlas 密码未轮换。
+
+---
+
+### E. 🔴 绝对不要再踩的坑（本轮新增，每条都带症状）
+
+**E-1. 🔴🔴 `vite build` 不做类型检查 —— "调用了没导入"构建期完全绿，运行时才炸。**
+本轮我改了 `App.tsx` 后忘了导入 `decideTopicAnalysisAction`，`npm run build` 照样
+`✓ built in 1.35s`，但运行时会直接抛 `is not defined`。
+更严重的是 C-2：`deleteBenchmarkProfileReport` 这种**必崩 bug 在代码里躺了很久没人发现**。
+→ **判断"改对了"不能只看 build 绿**。至少手动核对新增标识符的 import 是否存在；
+→ 涉及跨模块调用时，跑一次 `tsc --noEmit`（见 §D-1），或写一条源码级断言（见 E-3）。
+
+**E-2. 🔴🔴 React effect 的依赖数组里，绝不能放「这个 effect 自己会写的 state」。**
+症状极具迷惑性：**界面永久停在第一句文案，不报错不推进，而后端日志显示正在正常干活**。
+根因时序（精确复现过）：
+```
+① effect 跑 → setTopicAnalysisScope / setTopicContent → 启动异步分析
+② 异步函数在第一个 await 之前发出「正在读取本账号的选题库…」
+   —— 此时还没被取消，所以这句话**显示出来了**（用户看到的就是它）
+③ await 让出 → React 重渲染 → 依赖变了 → cleanup 执行 cancelled = true
+④ effect 重跑 → 已登记过的 key → 提前 return，**不再注册新 cleanup**
+⑤ 正在跑的分析被**永久**取消：onProgress/onContent 全被 if(!cancelled) 挡掉，结果被整个丢掉
+```
+→ **关键认知：提前 return 并不能"取消"上一次已经发出的取消信号。**
+→ 正确写法：effect 的**唯一依赖**是"范围指纹"字符串（`topicAnalysisScopeKey`），
+   其余值走 `useRef` 读取。取消只在"这批范围真的变了"时发生。
+→ 已加**源码级回归测试**钉住依赖数组（`topic-analysis-pipeline.test.mjs`），并**变异验证过**：退回旧写法该测试会红。
+→ 顺带扫过全仓同类模式，另有 6 处（`inView` / `sourcePlatform` / `wechatShareLinksLoading` /
+   `TopicLibraryStage` 两处 customerId / selectedReportId）**全部是误报** —— 它们都有收敛判断
+   且没有可取消的异步工作。**别再重复扫这个**。
+
+**E-3. 测试必须用「变异测试」验证它真的会红。**
+我第一版给流断开写的回归测试**是假的** —— 把兜底逻辑停用（变异）后它照样通过，
+说明它根本没走到那条路径（真实原因：媒体走的是 `undiciFetch` 而非全局 `fetch`，stub 拦不到；
+1.8ms 就结束是因为 ffmpeg 二进制当场失败）。
+→ **写完"防回归"测试后，把被保护的那段代码改坏，确认测试真的会红。** 不会红的测试是负资产。
+
+**E-4. 视频号没有分享链接 —— 判"能不能转写"必须按平台分开判。**
+它的媒体地址在 `source.mediaUrl`，且被 Isaac64 加密，靠 `source.decodeKey` 本地解密。
+抖音/TikTok 要 `link`，视频号要 `mediaUrl` + `decodeKey`。
+→ 一律要求 `link` 会把视频号**整批静默丢掉**（前端过滤比后端严，用户只看到"没有可分析的视频"）。
+→ 视频号也**用不了 `doubao-file`**（需要公网可拉的 URL），只能走 `ffmpeg`。
+
+**E-5. 「都处理完才显示」的根因通常不是网络，是上报时机。**
+`mapWithConcurrency` 的结果是**按输入顺序**收集的（这是它的契约）。
+`await` 它之后再统一合并 → 标签必须等**最慢的那一条**。
+→ 正确做法：让每条 worker **自己**在完成时上报（`onResolved`），谁先跑完谁先显示。
+→ 攒批时同理：`createBatcher` 的 **`flush()` 必须在所有条目到达后调用一次**，
+   否则最后不足一批的条目**永远不会被处理** —— 症状是"大部分出来了，尾巴几条永远转圈"。
+
+**E-6. 改比较符口径（`>` → `>=`）时，必须连**测试、错误文案、边界断言**一起改。**
+点赞门槛从「严格大于 100」改成「大于等于」后，4 处旧口径测试必须同步（**这不是"让测试变绿"，
+是口径变更的一部分**）。其中一条是**保护性测试**（"防调用方绕过业务下界"）——
+下界从 100 放开到 0 后，**保护本身要保留、只换下界**（负数仍会被夹到 0），不是把测试删掉。
+→ 后端错误文案也必须改：写「点赞未**超过** 100」在新口径下**自相矛盾**（100 其实达标了），
+   现为「点赞未**达到** 100」。
+
+**E-7. 🔴 不要凭"看起来合理"去调超时 / 换编码器 —— 我因此给过两次错建议。**
+- **超时**：我建议把 `FFMPEG_TIMEOUT_MS` 从 90s 降到 30~45s。实测后发现**是错的**：
+  57s 视频要 64.3s、103s 视频要 90.2s（余量只有 1.0x），调低会让**正常视频直接超时失败**，
+  然后回退到下一个 provider 再失败一遍，**比不调更低效**。
+- **编码器**：我测出 `aac` 比 `mp3` 快 2.6 倍，差点就改了。复测后**反转**（aac 反而慢 3 倍）。
+  真正原因是**抖音 CDN 每次解析出的主机不同、速度波动 3 倍以上**，而我那个对照是**顺序跑**的，
+  把网速差异错记到了编码器头上。
+→ **结论**：0.4MB 的音频用 mp3 还是 aac，ASR 都只花 ~2.7s，**编码器没有优化空间**；
+   真正的耗时是**下载整条视频**。改动前先做**控制变量**的测量。
+→ 现已把实测数字写进 `config.js` 注释与 `.env.example`，避免下一个会话再犯。
+
+**E-8. 测量时小心缓存把结果伪装成"很快"。**
+我测"瓶颈在哪"时得到 6.2s（看起来编码很快），实际是**转写缓存命中**、根本没跑 ffmpeg。
+真实值是 54s。**测量前先清缓存，或用日志确认真实走了那条路**。
+
+**E-9. 🔴 同名的工具函数在多个文件里各写了一份，其中几份是错的。**
+`normalizePlatform` 在 **4 个文件**里各有一份局部实现，其中
+`benchmarkTopicRefresh.js` / `benchmarkAnalysis.js` / `videoComments.js` 那几份都是
+`=== "tiktok" ? "tiktok" : "douyin"` —— **把 `wechat_channels` 压成了 `douyin`**（C-3 的根因之一）。
+`platformAdapters.js` 里才有**规范版本**（认 `wechat`/`wechat_channels`/`channels`/`视频号`）。
+→ 本轮只修了本链路用到的那个；**其余几处属同类隐患，尚未清理**。
+→ 加新平台时，先 grep 一遍有没有别的 `normalizePlatform`。
+
+**E-10. 两套后端必须同步改。**
+`apps/server/src/index.js`（Express）与 `apps/server/api/agent/*.ts`（Vercel）是同构的两份。
+本轮 `targets` 构造在两处都漏了 `mediaUrl/decodeKey`，只改一处会让线上线下行为分叉（§6.2⑤）。
+
+**E-11. 流（stream）的 `error` 事件没人接 = 进程级事故，不是"请求失败"。**
+`Readable.fromWeb(response.body)` 建好后到消费侧挂上监听之间有一段**窗口期**，
+这段窗口里断流就是 unhandled `'error'` → 进程退出（前端只看到 `socket hang up`）。
+→ 流一建好就挂兜底监听（`guardStreamErrors`），**不要等消费侧挂**。
+→ 另外：**Node 的 `pipe()` 不转发源流的 error**（出错时只调 `dest.end()`，不 emit error）。
+   失败感知靠消费侧在**同一个流**上直接挂的监听。我一开始把注释写错了，已更正。
+
+**E-12. 局部实现覆盖全局口径 —— 别在函数里另写一份"默认值"。**
+`resolveMinLikes` 用 `Math.max(下界, 传入值)`，而 `asNumber(undefined)` 是 0。
+下界一旦从 100 放开到 0，"不传门槛"就悄悄变成"不限点赞"（C-5）。
+→ **"没给"与"显式给了 0"必须区分开**，默认值要显式写出来，别让 `asNumber` 兜底。
+
+**E-13. ⚠️ codegraph 的 MCP 工具在本机返回的是**别的项目的陈旧索引**，不要用它了解本项目。**
+本机 DSH 的 MCP 配置（`~/.dsh/profiles/web/cordis.patch.yml`）里**硬编码**了
+`-p /Users/ypc/Desktop/Amazon-agent`，所以 `mcp__codegraph__*` 系列工具查到的是
+**Amazon-agent 的旧快照**，与 `xiaomang` 无关。曾因此浪费大量时间在"代码对不上"上。
+→ **要了解本项目结构，用 codegraph 的 CLI**（`codegraph status` / `codegraph query`），
+   它读的是磁盘上的当前索引；或直接用 `grep` / `glob` 读代码。
+→ 上游无法修：DSH 的 MCP 客户端不声明 `roots`，而 codegraph 只取第一个 root，
+   且 `--path` 的优先级高于 cwd。**已确认不可行，不要再尝试改这个配置。**
+
+---
+
+### F. 怎么验证（命令 + 期望数字）
+
+```bash
+cd /Users/ypc/Desktop/归档项目/xiaomang
+npm test               # 期望 452 passed / 0 failed
+npm run build          # 期望成功（⚠️ 不做类型检查，绿 ≠ 对）
+npm run verify:routes  # 期望 255 passed / 0 failed（需本地 MongoDB + apps/server/.env）
+npm run dev            # Express(8787) + Vite；⚠️ Vite 只监听 [::1]:5173（IPv6 localhost），
+                       #    `curl 127.0.0.1:5173` 会连不上，别误判成"服务没起"
+```
+
+**本轮新增的测试（含防线）**：
+- `apps/server/tests/topic-analysis-pipeline.test.mjs` —— 完成即上报、攒批、**取消策略 + 依赖数组源码断言**
+- `apps/server/tests/title-library.test.mjs` —— 标题库
+- `apps/server/tests/topic-content-rules.test.mjs` —— 门槛口径、`parseMinLikes`
+- `apps/server/tests/topic-library.test.mjs` —— 视频号进转写、平台不被压成 douyin、负门槛被夹
+- `apps/server/tests/content-agent.test.mjs` —— 流断开不打死进程、豆包 file-ASR
+
+**怎么"真看一眼"前端（本项目没有浏览器测试基建）**：
+改动 effect / 组件后**必须手动刷新页面确认**。历史上 TDZ 那类问题（§0.8-E-4）就是
+build 绿 + 单测全过但整页白屏。⚠️ **改了 effect 依赖数组时 HMR 不一定能干净应用，要硬刷新（Cmd+Shift+R）。**
+
+---
+
+### G. 下一会话第一步（建议顺序）
+
+1. **先跑 §F 的三条命令**，确认基线（452 / build / 255）与工作树状态（`git status`，本轮改动**未提交**）。
+2. **问用户要不要先提交这一轮的改动**（22 改 + 4 新增）。
+3. **评估 §D-1（加类型检查）** —— 这是本轮最值得做的结构性改进，且代价已实测（22 个错误）。
+4. 若用户报告视频号仍然慢或标签串了，按 §D-2 / §D-3 处理；**动手前先读 §E-7，别再去调超时或换编码器**。
 
 ---
 

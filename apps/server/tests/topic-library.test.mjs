@@ -140,24 +140,31 @@ const makeVideo = (id, likes, overrides = {}) => ({
   ...overrides,
 });
 
-test("点赞门槛是严格大于：100 不达标、101 达标", () => {
+test("点赞门槛是大于等于：100 算达标、99 不达标", () => {
   const videos = [
     makeVideo("v-exact", 100),
     makeVideo("v-above", 101),
     makeVideo("v-below", 99),
   ];
   const kept = normalizeTopicRefreshVideos(videos, { minLikes: 100 });
-  assert.deepEqual(kept.map(video => video.id), ["v-above"]);
+  assert.deepEqual(kept.map(video => video.id), ["v-exact", "v-above"]);
 });
 
-test("点赞缺失按 0 处理，不能算作已达标", () => {
+test("点赞缺失按 0 处理：门槛 100 时被挡掉，门槛 0 时被纳入", () => {
   const videos = [
     makeVideo("v-missing", 0, { stats: {} }),
     makeVideo("v-nan", 0, { stats: { likes: "abc" } }),
     makeVideo("v-ok", 500),
   ];
-  const kept = normalizeTopicRefreshVideos(videos, { minLikes: 100 });
-  assert.deepEqual(kept.map(video => video.id), ["v-ok"]);
+  assert.deepEqual(
+    normalizeTopicRefreshVideos(videos, { minLikes: 100 }).map(video => video.id),
+    ["v-ok"],
+  );
+  // 门槛填 0 → 0 >= 0 成立，缺失/非法点赞的条目也会进来（有意行为）
+  assert.deepEqual(
+    normalizeTopicRefreshVideos(videos, { minLikes: 0 }).map(video => video.id),
+    ["v-missing", "v-nan", "v-ok"],
+  );
 });
 
 // ── 2026-09-21：无描述发布的作品不能被后端丢掉 ────────────────────────────────
@@ -192,8 +199,9 @@ test("缺链接的作品仍然要丢掉（没有链接就无从解析视频、�
 test("候选被全部过滤时，错误信息要说清是缺链接还是没过点赞门槛", () => {
   const noLink = describeTopicRefreshVideoDrop([makeVideo("a", 500, { link: "" })], 100);
   assert.match(noLink, /缺少作品链接 1 条/);
-  const lowLikes = describeTopicRefreshVideoDrop([makeVideo("b", 100), makeVideo("c", 3)], 100);
-  assert.match(lowLikes, /点赞未超过 100 的 2 条/);
+  // ⚠️ 门槛 100 是**大于等于**口径：写 100 的话它其实达标了，所以这里用 99/3
+  const lowLikes = describeTopicRefreshVideoDrop([makeVideo("b", 99), makeVideo("c", 3)], 100);
+  assert.match(lowLikes, /点赞未达到 100 的 2 条/);
   // 标题为空**不该**出现在理由里 —— 它不是拦路虎（否则又会把人误导到错误的方向）
   const titleless = describeTopicRefreshVideoDrop([makeVideo("d", 0, { title: "" })], 100);
   assert.doesNotMatch(titleless, /标题/);
@@ -445,15 +453,21 @@ test("兜底匹配不上的视频落「待人工复核」，不会凭空编一�
 // 这些测试在修复前都是红的 —— 别把它们改回去。
 // ─────────────────────────────────────────────────────────────────────────────
 
-test("★ 点赞门槛不随调用方变化：不传、传 0、传负数都仍然是严格大于 100", () => {
+test("★ 业务下界仍然生效：负数被夹到 0，报告回显的是夹过的值", () => {
+  // 🔴 2026-09-28 口径变更（用户拍板）：点赞门槛改为**可自定义**，业务下界从 100 放开到 0。
+  //    这条测试原本钉的是「不传/传 0/传负数 都仍是严格大于 100」—— 那是旧口径下
+  //    「防调用方绕过业务下界」的保护。下界放开后，**保护本身要保留、只换下界**：
+  //    负数依然是非法输入（"至少 -50 个赞"没有意义），必须被夹取，不能原样生效。
   const videos = [makeVideo("v-1", 1), makeVideo("v-100", 100), makeVideo("v-101", 101)];
 
-  // 不传门槛时原来默认 0，1 个赞的视频也会被放进来 —— 业务规则会被静默绕过。
-  assert.deepEqual(normalizeTopicRefreshVideos(videos).map(v => v.id), ["v-101"]);
-  assert.deepEqual(normalizeTopicRefreshVideos(videos, { minLikes: 0 }).map(v => v.id), ["v-101"]);
-  assert.deepEqual(normalizeTopicRefreshVideos(videos, { minLikes: -50 }).map(v => v.id), ["v-101"]);
-  // 报告里回显的门槛也必须是夹过的值，不能把调用方的 0 原样回显出去。
-  assert.equal(buildBenchmarkTopicRefreshInput({ videos, categories: [], transcripts: new Map(), minLikes: 0 }).minLikes, 100);
+  // 不传门槛 → 用默认 100（不是 0），1 个赞的不会被放进来
+  assert.deepEqual(normalizeTopicRefreshVideos(videos).map(v => v.id), ["v-100", "v-101"]);
+  // 显式传 0 → 门槛就是 0，全部纳入（新口径允许，不是漏洞）
+  assert.deepEqual(normalizeTopicRefreshVideos(videos, { minLikes: 0 }).map(v => v.id), ["v-1", "v-100", "v-101"]);
+  // 负数 → 夹回下界 0（非法输入不能被当成"负门槛"生效）
+  assert.deepEqual(normalizeTopicRefreshVideos(videos, { minLikes: -50 }).map(v => v.id), ["v-1", "v-100", "v-101"]);
+  // 报告里回显的门槛必须是夹过的值，不能把 -50 原样回显出去
+  assert.equal(buildBenchmarkTopicRefreshInput({ videos, categories: [], transcripts: new Map(), minLikes: -50 }).minLikes, 0);
 });
 
 test("★ 多账号同名分类时，模型只回分类名不得静默绑到第一个账号", () => {

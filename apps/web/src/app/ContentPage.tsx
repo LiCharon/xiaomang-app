@@ -1689,6 +1689,32 @@ export default function ContentPage() {
             parameters: {
               share_links: batchLinksText,
               benchmark_topics: batchWechatTopics,
+              // 选题页（近 7 天）已经把脚本提好了，随请求一起带过去，后端**直接复用**、
+              // 不再 TikHub 解析（3~7s）+ 整条转写（10~45s）/条 —— 那是纯重复劳动。
+              //
+              // ⚠️ 两类条目都要带，键的口径不同但都必须与后端对齐：
+              //    · 抖音/TikTok → `getTopicShareLink`（就是 share_links 里那一行）；
+              //    · 视频号 → `getTopicWorkflowKey`（`wechat_channels:<id>`，后端
+              //      `topicWorkflowKey` 用同一套字段优先级算出来的）。
+              //    只带 share_link 的话**视频号会退回现场解密+转写** —— 而视频号要本地解密，
+              //    比抖音慢得多，正是最该复用的一类。
+              benchmark_videos: [
+                ...benchmarkVideos
+                  .filter(video => batchInputs.some(item => item.kind === "share_link" && item.link === video.link))
+                  .map(video => ({
+                    link: video.link,
+                    title: video.title,
+                    script: video.script || "",
+                    scriptSource: video.scriptSource || "",
+                  })),
+                ...batchWechatTopics
+                  .map(topic => ({
+                    link: getTopicWorkflowKey(topic),
+                    title: String((topic as TopicLike)?.title || ""),
+                    script: String((topic as TopicLike)?.content?.script || ""),
+                    scriptSource: String((topic as TopicLike)?.content?.scriptSource || ""),
+                  })),
+              ].filter(video => video.link && video.script),
             },
           }),
           signal: controller.signal,

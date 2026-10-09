@@ -679,11 +679,30 @@ export const fetchPlatformTopics = async ({ platform, accounts, count = 200, day
         .map(video => normalizeWeChatChannelsTopic(video, account))
         .sort((a, b) => toTimestampMs(b.rawData?.create_time || b.publishDate) - toTimestampMs(a.rawData?.create_time || a.publishDate))
         .slice(0, limit);
+      // 🔴 诊断：视频号选题**必须**带 `source.mediaUrl` + `source.decodeKey` 才能提取脚本
+      //    （媒体在 CDN 上且被 Isaac64 加密，缺这两个字段就解不开、也就转写不了）。
+      //    它们来自 TikHub 列表响应的 `media.full_url` / `media.decode_key` —— 文档**没有**
+      //    承诺这两个字段一定存在，实测口径一变就可能整批缺字段。
+      //    缺字段时若静默返回，下游 `transcribableVideos` 会把整批过滤掉，
+      //    表现是「选题列表有内容，但脚本/标签一直不动」——极难定位。
+      const missingMedia = topics.filter(topic => !topic?.source?.mediaUrl || !topic?.source?.decodeKey).length;
+      if (missingMedia > 0) {
+        options.logger?.warn("wechat.topics.missing_media", {
+          interface: "wechat_channels:topics",
+          finderUsername: account.finderUsername,
+          topicCount: topics.length,
+          missingMedia,
+          // 把响应里 media 的实际字段名记下来：下一轮就能照着改字段映射
+          mediaKeys: Object.keys(allVideos?.[0]?.media || {}),
+        });
+      }
       results.push({
         inputName: account.inputName || account.displayName,
         authorName: pageResponses?.[0]?.data?.nickname || account.displayName || account.inputName,
         finderUsername: account.finderUsername,
         videosCount: topics.length,
+        // 如实告诉前端"这批里有多少条拿不到媒体直链"，界面据此提示用户，而不是装作正常。
+        missingMediaCount: missingMedia,
         topics,
         videosResponse: pageResponses?.[0],
         pageCount: pageResponses.length,

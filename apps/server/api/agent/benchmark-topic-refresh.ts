@@ -27,12 +27,18 @@ export const config = { maxDuration: 300 };
 
 const asText = (value: unknown) => String(value ?? "").trim();
 
+// ⚠️ 这里**不能**只挑 id/link/title/platform：视频号没有 link，靠 mediaUrl + decodeKey
+//    在本地解密后转写。漏了这两个字段，视频号到 transcribeTargets 里就会报
+//    「缺少媒体地址」，而真正的原因是字段在这一层被丢掉了。
+//    （Express 版 src/index.js 的对应位置必须同步改 —— §6.2⑤ 两套后端同构。）
 const targetsFromVideos = (videos: unknown, minLikes: unknown) => normalizeTopicRefreshVideos(videos, { minLikes })
   .map(video => ({
     videoId: video.id,
     link: video.link,
     title: video.title,
     platform: video.platform,
+    mediaUrl: (video as any).mediaUrl,
+    decodeKey: (video as any).decodeKey,
   }));
 
 export default async function handler(req: any, res: any) {

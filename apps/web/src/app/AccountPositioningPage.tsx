@@ -2,9 +2,11 @@ import { useState, type ComponentType } from "react";
 import { useNavigate } from "react-router";
 import {
   ArrowRight,
+  CalendarRange,
   CheckCircle2,
   Clapperboard,
   FileStack,
+  History,
   Hourglass,
   Info,
   Layers3,
@@ -13,18 +15,21 @@ import {
   MessageSquareText,
   Sparkles,
   UsersRound,
+  Video,
 } from "lucide-react";
 import { BenchmarkClassificationStage } from "./BenchmarkClassificationStage";import { GoldThreeSecondsStage } from "./GoldThreeSecondsStage";
 import { EndingHooksStage } from "./EndingHooksStage";
 import { BenchmarkProfileStage } from "./BenchmarkProfileStage";
 import { AccountPlanStage } from "./AccountPlanStage";
 import { TopicLibraryStage } from "./TopicLibraryStage";
+import { VideoAnalysisStage } from "./VideoAnalysisStage";
 import type { SavedBenchmarkReport } from "./benchmarkAnalysis";
 import { useStageDraft } from "./stageDraft";
 import {
   ACCOUNT_PLAN_MODULE_ID,
   BENCHMARK_ANALYSIS_MODULE_ID,
   POSITIONING_MODULES,
+  REVIEW_MODULE_ID,
   TOPIC_LIBRARY_MODULE_ID,
   findModule,
   findStep,
@@ -33,15 +38,20 @@ import {
   type StepId,
 } from "./accountPositioningModules";
 
-// 账号定位是「三个模块、两层」，不是一个一个独立功能，也不是一条平级的阶段直线：
+// 账号定位是「四个模块、两层」，不是一个一个独立功能，也不是一条平级的阶段直线：
 // 模块 1/2（对标账号分析、账号规划）复用模块 3（选题库构建）的产出，而 2.1/2.2/2.3
-// 是模块 3 的内部子步骤。结构定义统一在 accountPositioningModules.ts。
+// 是模块 3 的内部子步骤；模块 4（复盘分析）把真实数据倒回上游，形成闭环。
+// 结构定义统一在 accountPositioningModules.ts。
 //
 // 图标留在页面这一层，免得那个纯数据的定义文件被 ManagerHomePage 引用时也拖进 lucide。
+//
+// ⚠️ 这两个 Record 的键必须覆盖全部 ModuleId / StepId。本项目的 build **不跑 tsc**，
+//    漏一个键构建期不会报错，运行时 `Icon` 是 undefined → 整页白屏（踩过）。
 const MODULE_ICONS: Record<ModuleId, ComponentType<{ className?: string }>> = {
   "benchmark-analysis": UsersRound,
   "account-plan": ListChecks,
   "topic-library": Layers3,
+  review: History,
 };
 
 const STEP_ICONS: Record<StepId, ComponentType<{ className?: string }>> = {
@@ -49,6 +59,8 @@ const STEP_ICONS: Record<StepId, ComponentType<{ className?: string }>> = {
   gold: Sparkles,
   ending: MessageSquareText,
   library: LibraryBig,
+  "video-review": Video,
+  "account-review": CalendarRange,
 };
 
 const moduleStatus = (module: (typeof POSITIONING_MODULES)[number], completedIds: string[]) => {
@@ -87,6 +99,9 @@ const PREREQUISITES: Record<string, Array<{ id: string; label: string }>> = {
   gold: [{ id: "classification", label: "2.1 对标账号分类分析" }],
   ending: [{ id: "classification", label: "2.1 对标账号分类分析" }],
   library: [{ id: "classification", label: "2.1 对标账号分类分析" }],
+  // 4.1 不建库也能跑（三秒/标题/结尾钩子是从文案判的），但没有库就给不出「选题大类/小类」，
+  // 所以要如实提示先建库 —— 只是提示，不拦。
+  "video-review": [{ id: "library", label: "2.4 正式选题库" }],
   [BENCHMARK_ANALYSIS_MODULE_ID]: [{ id: "classification", label: "2.1 对标账号分类分析" }],
   [ACCOUNT_PLAN_MODULE_ID]: [{ id: BENCHMARK_ANALYSIS_MODULE_ID, label: "1.2 对标账号分析" }],
 };
@@ -139,9 +154,12 @@ export default function AccountPositioningPage() {
   const [handoffReport, setHandoffReport] = useState<SavedBenchmarkReport | null>(null);
 
   const activeModule = findModule(activeModuleId);
-  const isTopicLibrary = activeModule.id === TOPIC_LIBRARY_MODULE_ID;
-  // 子步骤只在模块 3 里有意义；不在模块 3 时一律为 null，避免拿旧值去渲染。
-  const activeStep = isTopicLibrary ? findStep(activeModule.steps, activeStepId) : null;
+  // 有子步骤的模块才渲染那条子步骤轨道。**不要再写死成模块 3** ——
+  // 之前是 `activeModule.id === TOPIC_LIBRARY_MODULE_ID`，模块 4 的 4.1/4.2 因此永远不出现。
+  const hasSteps = activeModule.steps.length > 0;
+  const activeStep = hasSteps ? findStep(activeModule.steps, activeStepId) : null;
+  // 2 个子步骤用两列，免得三列时右边空一格看着像少了东西。
+  const stepGridClass = activeModule.steps.length === 2 ? "sm:grid-cols-2" : "sm:grid-cols-3";
 
   const markCompleted = (id: string) => {
     setCompletedIds(previous => (previous.includes(id) ? previous : [...previous, id]));
@@ -152,19 +170,20 @@ export default function AccountPositioningPage() {
     setCompletedIds(previous => previous.filter(item => item !== id));
   };
 
-  const openStep = (stepId: StepId) => {
-    setActiveModuleId(TOPIC_LIBRARY_MODULE_ID);
+  /** 切到某个子步骤。默认留在当前模块，跨模块跳转（如 2.1 → 2.2）要显式传模块 id。 */
+  const openStep = (stepId: StepId, moduleId: ModuleId = activeModule.id) => {
+    setActiveModuleId(moduleId);
     setActiveStepId(stepId);
   };
 
   const handleClassificationSaved = (item: SavedBenchmarkReport) => {
     setHandoffReport(item);
     markCompleted("classification");
-    openStep("gold");
+    openStep("gold", TOPIC_LIBRARY_MODULE_ID);
   };
 
   const renderBody = () => {
-    if (isTopicLibrary && activeStep) {
+    if (hasSteps && activeStep) {
       if (activeStep.id === "classification" && activeStep.available) {
         return <BenchmarkClassificationStage embedded onSavedReport={handleClassificationSaved} />;
       }
@@ -173,7 +192,7 @@ export default function AccountPositioningPage() {
           <GoldThreeSecondsStage
             embedded
             preselectedReport={handoffReport}
-            onGoToClassification={() => openStep("classification")}
+            onGoToClassification={() => openStep("classification", TOPIC_LIBRARY_MODULE_ID)}
             onSaved={() => markCompleted("gold")}
           />
         );
@@ -183,7 +202,7 @@ export default function AccountPositioningPage() {
           <EndingHooksStage
             embedded
             preselectedReport={handoffReport}
-            onGoToClassification={() => openStep("classification")}
+            onGoToClassification={() => openStep("classification", TOPIC_LIBRARY_MODULE_ID)}
             onSaved={() => markCompleted("ending")}
           />
         );
@@ -197,9 +216,14 @@ export default function AccountPositioningPage() {
             preselectedReport={handoffReport}
             onSaved={() => markCompleted("library")}
             onCleared={() => unmarkCompleted("library")}
-            onGoToClassification={() => openStep("classification")}
+            onGoToClassification={() => openStep("classification", TOPIC_LIBRARY_MODULE_ID)}
           />
         );
+      }
+      // 模块 4（复盘分析）：4.1 单条视频数据分析。
+      // 它分析的是**客户自己发布的视频**，数据由人工上传 Excel —— 不抓取、不转写。
+      if (activeStep.id === "video-review" && activeStep.available) {
+        return <VideoAnalysisStage embedded onSaved={() => markCompleted("video-review")} />;
       }
       return (
         <NotImplementedPanel
@@ -246,7 +270,7 @@ export default function AccountPositioningPage() {
       <div className="page-header">
         <div>
           <h1 className="page-title">账号定位</h1>
-          <div className="page-subtitle max-w-3xl">从客户 IP 档案出发的一条完整流程：先用对标账号产出选题库，再综合成账号定位规划。各阶段各自保存报告，按顺序往下走即可。</div>
+          <div className="page-subtitle max-w-3xl">从客户 IP 档案出发的一条完整流程：先用对标账号产出选题库，再综合成账号定位规划，最后用自己账号的真实数据做复盘、把结论倒回下一轮的选题与文案结构。</div>
         </div>
       </div>
 
@@ -262,7 +286,8 @@ export default function AccountPositioningPage() {
         </section>
 
         <nav aria-label="账号定位模块" className="mt-6">
-          <div className="grid gap-3 sm:grid-cols-3">
+          {/* 四个模块：窄屏两列，宽屏一行四个（原来只有三个模块时是 sm:grid-cols-3）。 */}
+          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
             {POSITIONING_MODULES.map(module => {
               const isActive = module.id === activeModule.id;
               const chip = moduleStatus(module, completedIds);
@@ -295,13 +320,14 @@ export default function AccountPositioningPage() {
           </div>
         </nav>
 
-        {/* 模块 3 的子步骤轨道。左侧描边 + 缩进表示它是上一层的内部步骤，而不是又一个
-            平级模块 —— 按「界面保持清爽」的要求，这里不加页面级小标题。 */}
-        {isTopicLibrary && (
-          <nav aria-label="选题库构建的子步骤" className="mt-3 border-l-2 border-slate-200 pl-3 sm:ml-4">
+        {/* 子步骤轨道（模块 3 的 2.1～2.4、模块 4 的 4.1～4.2）。左侧描边 + 缩进表示
+            它是上一层的内部步骤，而不是又一个平级模块 —— 按「界面保持清爽」的要求，
+            这里不加页面级小标题。 */}
+        {hasSteps && (
+          <nav aria-label={`${activeModule.title}的子步骤`} className="mt-3 border-l-2 border-slate-200 pl-3 sm:ml-4">
             {/* 2.4（正式选题库与更新筛选）是模块 3 的产出落地步骤，渲染成整行的第二排，
                 免得把 2.1～2.3 三个步骤挤窄。步骤清单同样来自 accountPositioningModules.ts。 */}
-            <div className="grid gap-3 sm:grid-cols-3">
+            <div className={`grid gap-3 ${stepGridClass}`}>
               {activeModule.steps.map(step => {
                 const isActive = step.id === activeStep?.id;
                 const isCompleted = completedIds.includes(step.id);
@@ -324,7 +350,11 @@ export default function AccountPositioningPage() {
                       <Icon className={`h-3.5 w-3.5 shrink-0 ${isActive ? "text-blue-600" : step.available ? "text-slate-500" : "text-slate-400"}`} />
                       <span className="text-xs font-semibold text-slate-900">{step.title}</span>
                     </div>
-                    {step.id === "library" && <p className="mt-2 text-xs leading-5 text-slate-500">{step.summary}</p>}
+                    {/* 整行宽的那个步骤（2.4）与模块 4 的步骤都带摘要：它们在轨道上占的面更大，
+                        多一行说明才不会显得空。 */}
+                    {(step.id === "library" || activeModule.steps.length === 2) && (
+                      <p className="mt-2 text-xs leading-5 text-slate-500">{step.summary}</p>
+                    )}
                     {pending.length > 0 && (
                       <p className="mt-2 inline-flex items-start gap-1 text-[11px] leading-4 text-amber-600"><Info className="mt-0.5 h-3 w-3 shrink-0" />建议先完成：{pending.join("、")}</p>
                     )}

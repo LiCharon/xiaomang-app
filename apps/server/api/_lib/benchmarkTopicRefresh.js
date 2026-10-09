@@ -5,6 +5,19 @@
  * 分类 id 已带账号作用域。这里不写库，只产出打标签结果。
  */
 
+/**
+ * 🔴 `normalizePlatform` 用 `platformAdapters` 里的**规范版本**，不在这里另写一份。
+ *
+ * 原来本地写的是 `=== "tiktok" ? "tiktok" : "douyin"` —— 它把 **`wechat_channels`
+ * 压成了 `douyin`**。后果：视频号选题进了这个函数就变成抖音，随后因为"抖音必须有
+ * link"而被过滤掉，**表现是视频号选题在选题页永远分析不了**，且不报错。
+ *
+ * 全仓有 4 处同名的局部实现（benchmarkAnalysis / videoComments / topicLibraryStore /
+ * topicRefreshSessionStore），其中几处有同样的问题。这里只修本链路用到的这一个；
+ * 其余几处没有接受视频号输入，暂不影响功能，但**属于同一类隐患**。
+ */
+import { normalizePlatform } from "./platformAdapters.js";
+
 export const TOPIC_REFRESH_MAX_VIDEOS = 60;
 export const TOPIC_REFRESH_MAX_CATEGORIES = 40;
 export const TOPIC_REFRESH_MAX_SUBCATEGORIES = 80;
@@ -16,10 +29,42 @@ export const TOPIC_REFRESH_MAX_SUBCATEGORIES = 80;
  * 否则调用方传 `minLikes: 0` 就能把 1 个赞的视频放进打标签流程，
  * 而这个规则会**静默失效**（前端硬编码 100、后端默认 100 都只是「约定」，拦不住）。
  */
-export const TOPIC_REFRESH_MIN_LIKES = 100;
+/**
+ * 点赞门槛的**业务下界**（2026-09-28 从 100 放开到 0）。
+ *
+ * 用户口径：门槛要支持自定义，包括 0 —— 「低赞内容也要纳进来」是合理需求
+ * （新号、垂类小号本来就没什么赞）。
+ *
+ * 🔴 这里原来是 100，而 `resolveMinLikes` 用 `Math.max(下界, 传入值)` 夹取：
+ *    前端填 50 会被**静默夹回 100** —— 界面显示 50、实际按 100 过滤，且不报错。
+ *    既然要做"自定义"，下界就必须跟着放开，否则功能是假的。
+ */
+export const TOPIC_REFRESH_MIN_LIKES = 0;
 
-/** 把调用方给的门槛夹到合法区间：永远不允许低于业务下界。 */
-export const resolveMinLikes = value => Math.max(TOPIC_REFRESH_MIN_LIKES, asNumber(value));
+/**
+ * 调用方**没给**门槛时用的默认值 —— 与前端 `TOPIC_MIN_LIKES` 同一个数。
+ *
+ * 🔴 这个常量是必须单独存在的，不能靠 `asNumber(undefined) → 0` 兜底：
+ *    那样"不传门槛"会变成**不限点赞**，比业务默认（100）宽松得多。
+ *    一个调用方忘了传，就会静默把低赞内容全放进来 —— 而报告里回显的
+ *    `minLikes: 0` 看起来还很正常。默认值必须显式写出来。
+ */
+export const TOPIC_REFRESH_DEFAULT_MIN_LIKES = 100;
+
+/**
+ * 归一化调用方给的门槛：
+ *   · 没给（`undefined`/`null`/空串）→ 用**默认值 100**，不是 0；
+ *   · 给了合法值 → 就用它（**含 0**，这是"自定义门槛"的核心诉求）；
+ *   · 非法（负数/非数字）→ 夹到业务下界 0。
+ *
+ * ⚠️ 显式的 0 与"没给"必须区分开：前者是用户主动选择"不限点赞"，
+ *    后者只是没传参。混在一起就是上面说的那个静默放宽。
+ */
+export const resolveMinLikes = value => {
+  const missing = value === undefined || value === null || String(value).trim() === "";
+  if (missing) return TOPIC_REFRESH_DEFAULT_MIN_LIKES;
+  return Math.max(TOPIC_REFRESH_MIN_LIKES, asNumber(value));
+};
 
 /**
  * 候选视频被全部过滤掉时，**说清楚为什么**。
@@ -37,12 +82,14 @@ export const describeTopicRefreshVideoDrop = (rawVideos, minLikes) => {
     const source = raw && typeof raw === "object" ? raw : {};
     if (!cleanText(source.link || source.shareLink)) missingLink += 1;
     const likes = normalizeStats(source.stats || source.statistics).likes;
-    if (!(likes > threshold)) belowLikes += 1;
+    if (!(likes >= threshold)) belowLikes += 1;
   }
   // 只有「缺链接」「点赞不过门槛」是真拦路虎；标题为空**不影响**（见上面的 filter 注释）。
   const reasons = [
     missingLink ? `缺少作品链接 ${missingLink} 条` : "",
-    belowLikes ? `点赞未超过 ${threshold} 的 ${belowLikes} 条` : "",
+    // 口径是「大于等于」，所以措辞用「未达到」——写「未超过」在门槛=实际值时会自相矛盾
+    // （那条其实达标了，只是没被算进来，用户会以为筛选坏了）。
+    belowLikes ? `点赞未达到 ${threshold} 的 ${belowLikes} 条` : "",
   ].filter(Boolean);
   return `收到 ${list.length} 条候选，没有一条能进入分析：${reasons.length ? reasons.join("、") : "字段形状不符合要求"}。`;
 };
@@ -56,7 +103,6 @@ const asNumber = value => {
 
 const cleanText = (value, maxLength = 900) => asText(value).replace(/\s+/g, " ").slice(0, maxLength);
 
-const normalizePlatform = value => asText(value).toLowerCase() === "tiktok" ? "tiktok" : "douyin";
 
 const normalizeId = (value, fallback) => cleanText(value, 160) || fallback;
 
@@ -118,17 +164,29 @@ export const normalizeTopicRefreshVideos = (videos, options = {}) => {
         publishDate: cleanText(source.publishDate, 40),
         sourceText: cleanText(source.sourceText || source.desc, 900),
         platform: normalizePlatform(source.platform),
+        // 视频号：媒体直链 + 解密密钥。它没有分享链接，靠本地解密后转写，
+        // 所以这两个字段必须原样带下去（见 goldThreeSecondTranscripts 的按平台分流）。
+        ...(source.mediaUrl || source.decodeKey
+          ? { mediaUrl: cleanText(source.mediaUrl, 1000), decodeKey: cleanText(source.decodeKey, 200) }
+          : {}),
         stats,
       };
     })
-    // ⚠️ 门槛是**严格大于**（用户口径 `likes > 100`：100 不达标）。
-    // 写成 `>=` 会让刚好 100 赞的视频混进来。点赞缺失归一化成 0，不会被误放行。
+    // 门槛口径是**大于等于**（2026-09-28 由严格大于改来，用户拍板），且门槛可自定义。
     // ⚠️ **不要求标题**：抖音允许「无描述发布」，前端 `isAnalysableRawVideo` 也刻意放行了
     // 这类作品（它的注释写得很清楚：「有文案」不是必要条件）。原来这里卡 `video.title`，
     // 于是「明明抓到了视频、也能转写」，却被后端静默丢光 → 回一句
     // 「没有满足筛选条件的可分析视频」，用户完全看不出问题在哪。
     // 标题只是给打标签当上下文，缺了不影响提取脚本，界面也早有「（无标题）」兜底。
-    .filter(video => video.id && video.link && video.stats.likes > minLikes)
+    // ⚠️ 可转写性按平台判定：
+    //    · 抖音/TikTok 必须有 link（后端拿它去 TikHub 解析直链）；
+    //    · 视频号没有分享链接，必须有 mediaUrl + decodeKey（本地解密后抽音频）。
+    //    原来一律要求 link，于是**视频号选题被静默丢光**，用户只看到"没有可分析的视频"。
+    .filter(video => video.id && video.stats.likes >= minLikes && (
+      video.platform === "wechat_channels"
+        ? Boolean(video.mediaUrl && video.decodeKey)
+        : Boolean(video.link)
+    ))
     .slice(0, maxVideos);
 };
 

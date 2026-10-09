@@ -1,4 +1,4 @@
-import { resolveTikHubVideo, transcribeVideo } from "./contentAgent/providers.js";
+import { resolveTikHubVideo, resolveWeChatChannelsTopicVideo, transcribeVideo } from "./contentAgent/providers.js";
 import { selectGoldThreeSecondVideos } from "./goldThreeSeconds.js";
 import { TRANSCRIPT_SCOPE_HEAD, TRANSCRIPT_SCOPE_SCRIPT, TRANSCRIPT_SCOPE_TAIL } from "./transcriptStore.js";
 
@@ -33,14 +33,55 @@ const asText = value => String(value ?? "").trim();
  */
 export const selectTranscriptTargets = (classificationReport, limit) => (
   selectGoldThreeSecondVideos(classificationReport?.videos, limit)
-    .map(video => ({
-      videoId: asText(video?.id),
-      link: asText(video?.link),
-      title: asText(video?.title),
-      platform: asText(video?.platform).toLowerCase() === "tiktok" ? "tiktok" : "douyin",
-    }))
-    .filter(item => item.videoId && item.link)
+    .map(video => {
+      const rawPlatform = asText(video?.platform).toLowerCase();
+      const platform = rawPlatform === "tiktok"
+        ? "tiktok"
+        : rawPlatform === "wechat_channels" ? "wechat_channels" : "douyin";
+      return {
+        videoId: asText(video?.id),
+        link: asText(video?.link),
+        title: asText(video?.title),
+        platform,
+        // 视频号：媒体直链 + 解密密钥。它没有分享链接，必须走本地解密那条路。
+        mediaUrl: asText(video?.mediaUrl),
+        decodeKey: asText(video?.decodeKey),
+      };
+    })
+    // 可转写性按平台判定（与 benchmarkTopicRefresh 的过滤同一口径）：
+    // 抖音/TikTok 要 link；视频号要 mediaUrl + decodeKey。
+    // 原来一律要求 link，于是**视频号选题一条都进不来**。
+    .filter(item => item.videoId && (
+      item.platform === "wechat_channels"
+        ? Boolean(item.mediaUrl && item.decodeKey)
+        : Boolean(item.link)
+    ))
 );
+
+/**
+ * 解析一条待转写的条目 → `videoMeta`。
+ *
+ * 两条路差别很大，**不能混用**：
+ *   · 抖音 / TikTok：`resolveTikHubVideo` 拿分享链接去 TikHub 换 CDN 直链；
+ *   · 视频号：**没有分享链接**，媒体在 CDN 上且被 Isaac64 加密，必须带上
+ *     `mediaUrl` + `decodeKey`，由 `transcribeVideo` 里的 `prepareVideoInput`
+ *     在本地解密成流再喂 ffmpeg。
+ *
+ * 🔴 把视频号错走成 `resolveTikHubVideo` 的话，会拿一个空链接去请求 TikHub，
+ *    报出来的是"链接不合法"之类，完全看不出真正的原因是平台没分流。
+ */
+export const resolveTargetVideo = (target, config, options = {}) => {
+  const logger = options.logger;
+  if (asText(target?.platform) === "wechat_channels") {
+    return resolveWeChatChannelsTopicVideo({
+      id: target.videoId,
+      title: target.title,
+      source: { platform: "wechat_channels", mediaUrl: target.mediaUrl, decodeKey: target.decodeKey },
+      rawData: { media: { url: target.mediaUrl, decode_key: target.decodeKey } },
+    });
+  }
+  return resolveTikHubVideo(target.link, config, { logger, platform: target.platform });
+};
 
 /**
  * 解析预取窗口。
@@ -182,7 +223,7 @@ export const transcribeTargets = async ({
   const prefetch = createResolvePrefetch({
     count: list.length,
     windowSize: Number(resolveConcurrency) || 0,
-    resolve: index => resolveTikHubVideo(list[index].link, config, { logger, platform: list[index].platform }),
+    resolve: index => resolveTargetVideo(list[index], config, { logger }),
   });
 
   const worker = async () => {

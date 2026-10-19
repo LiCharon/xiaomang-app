@@ -1,5 +1,9 @@
 {
   "functions": {
+    "api/review/workbook-recognition.ts": { "maxDuration": 180 },
+    "api/review/weekly.ts": { "maxDuration": 300 },
+    "api/weekly-analysis-reports/index.ts": { "maxDuration": 30 },
+    "api/review-memory/index.ts": { "maxDuration": 30 },
     "api/tikhub/batch.ts": {
       "maxDuration": 300,
       "regions": ["hkg1"]

@@ -48,16 +48,29 @@ const getTranscriptProviders = () => {
   // ⚠️ 这个集合是**白名单**：TRANSCRIPT_PROVIDERS 里认不出的名字会被静默过滤掉
   //    （不报错，只是不生效）。新增 provider 必须同时加到 providers.js 的分支里，
   //    否则用户配了却看不到任何效果 —— 这类"配了没用"最难查。
-  const allowed = new Set(["tikhub-music", "tikhub-ffmpeg", "ffmpeg", "doubao-video", "doubao-file"]);
+  const allowed = new Set(["tikhub-music", "tikhub-ffmpeg", "ffmpeg", "doubao-video", "doubao-file", "doubao-stream"]);
   const enableTikHubProvider = String(process.env.TIKHUB_TRANSCRIPT_PROVIDER_ENABLED || "true").toLowerCase() !== "false";
   // tikhub-music 用 music.play_url mp3 直送 ASR，跳过 ffmpeg 提取（实测快约 12 倍）。
   // 默认开启。music 是纯背景音乐（无人声）时 ASR 返回空，provider 链自动回退到 tikhub-ffmpeg。
   // 如需关闭设 TIKHUB_MUSIC_PROVIDER_ENABLED=false。
   const enableMusicProvider = String(process.env.TIKHUB_MUSIC_PROVIDER_ENABLED || "true").toLowerCase() !== "false";
-  const providers = splitCsv(process.env.TRANSCRIPT_PROVIDERS, ["doubao-file", "ffmpeg", "doubao-video"])
+  // 2026-10-18：默认 ASR 从「录音文件识别 2.0（Seed，按量付费）」换成「流式/实时识别 2.0」
+  // （doubao-stream，小时版资源，用户有 20 小时免费额度）。
+  // 同日第二次调整：**默认链里的极速版 flash 段（tikhub-music / tikhub-ffmpeg / ffmpeg）
+  // 全部换成「豆包录音文件识别模型 2.0」（doubao-file → volc.seedasr.auc，异步 submit/query）。
+  // 三个 flash provider 的代码与白名单**保留**（回滚/手动配置时仍可用），但默认不再进链。
+  const providers = splitCsv(process.env.TRANSCRIPT_PROVIDERS, ["doubao-stream", "doubao-file", "doubao-video"])
     .map(normalizeTranscriptProvider)
     .filter(item => allowed.has(item));
-  const normalized = providers.length > 0 ? providers : ["doubao-file", "ffmpeg", "doubao-video"];
+  const normalized = providers.length > 0 ? providers : ["doubao-stream", "doubao-file", "doubao-video"];
+  // 🔴 计费/免费额度通道（doubao-stream / doubao-file）如果被**显式写在链首**，保持它在链首：
+  //    TikHub 的自动 unshift 只对后面的 flash 段生效。否则 `TRANSCRIPT_PROVIDERS=doubao-stream,...`
+  //    会被静默改成「tikhub-music → tikhub-ffmpeg → doubao-stream ...」——前两个先走 flash，
+  //    "优先用免费流式额度"的配置等于没写（2026-10-18 迁移时踩过）。
+  const preferredPrefix = [];
+  while (normalized.length > 0 && (normalized[0] === "doubao-stream" || normalized[0] === "doubao-file")) {
+    preferredPrefix.push(normalized.shift());
+  }
   if (enableTikHubProvider && normalized.includes("ffmpeg") && !normalized.includes("tikhub-ffmpeg")) {
     normalized.unshift("tikhub-ffmpeg");
   }
@@ -65,7 +78,7 @@ const getTranscriptProviders = () => {
   if (enableMusicProvider && normalized.includes("tikhub-ffmpeg") && !normalized.includes("tikhub-music")) {
     normalized.unshift("tikhub-music");
   }
-  return Array.from(new Set(normalized));
+  return Array.from(new Set([...preferredPrefix, ...normalized]));
 };
 
 export const getContentAgentConfig = () => {
@@ -155,6 +168,25 @@ export const getContentAgentConfig = () => {
     // 超过就走回退，不要在这条路上无限等。
     doubaoFileAsrPollIntervalMs: toInt(process.env.DOUBAO_FILE_ASR_POLL_INTERVAL_MS, 2000),
     doubaoFileAsrBudgetMs: toInt(process.env.DOUBAO_FILE_ASR_BUDGET_MS, 120000),
+    // ── 豆包流式/实时语音识别 2.0（WebSocket，2026-10-18 接入）─────────────
+    // 为什么换：用户账户里「录音文件识别 2.0（Seed，volc.seedasr.auc）」已转正式版、
+    // 按量后付费（¥4.5/小时量级）；而流式识别 2.0 小时版还有 20 小时免费额度。
+    // 协议要点（已用官方 Python/Java/Go SDK + 真实 API 验证）：
+    //   · 两端 WebSocket，二进制帧 + gzip payload，不是裸 JSON；
+    //   · 资源 id 用「小时版」volc.seedasr.sauc.duration（按音频时长扣免费额度/计费），
+    //     并发版 volc.seedasr.sauc.concurrent 按并发计费，不适合本项目；
+    //   · 客户端可以**全速发送**（不必须按 200ms 实时节拍），实测 26.8s 音频约 2.6s 拿到
+    //     最终结果，所以批量转写不会被拖成"视频多长就等多久"。
+    // 音频由 ffmpeg 抽成 16k 单声道 s16le PCM 后整段发送，因此 head/tail 裁剪对这条通道**有效**。
+    doubaoStreamAsrUrl:
+      process.env.DOUBAO_STREAM_ASR_URL ||
+      "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+    doubaoStreamAsrResourceId:
+      process.env.DOUBAO_STREAM_ASR_RESOURCE_ID || "volc.seedasr.sauc.duration",
+    // 单个 WebSocket 会话的总预算；超时即失败，交给 provider 链回退。
+    doubaoStreamAsrBudgetMs: toInt(process.env.DOUBAO_STREAM_ASR_BUDGET_MS, 120000),
+    // 每个音频包字节数：16k×16bit×单声道 = 32000 B/s，6400 B = 200ms（与官方 SDK 对齐）。
+    doubaoStreamAsrChunkBytes: toInt(process.env.DOUBAO_STREAM_ASR_CHUNK_BYTES, 6400),
     doubaoVideoEndpoint: process.env.DOUBAO_VIDEO_ENDPOINT || "",
     doubaoVideoApiKey: process.env.DOUBAO_VIDEO_API_KEY || "",
     doubaoVideoModel: process.env.DOUBAO_VIDEO_MODEL || "doubao-seed-2-0-mini-260428",
@@ -166,19 +198,24 @@ export const getContentAgentConfig = () => {
     // （其中「下载/解码整条视频」占大头），60 条根本跑不完。
     // 但只要**开场 3 秒**的话没必要转整条 —— 下面这个 clip 让 ffmpeg 只取开头
     // 一小段音频（`-t N`，见 buildFfmpegAudioExtractArgs），提取和 ASR 都随之变快。
-    // 只对黄金三秒生效：员工二创链路仍然要完整转写，不要给它传这个值。
+    // 2026-10-18 起 doubao-stream 走「本地 ffmpeg → PCM」，所以这条裁剪对新的流式通道
+    // 同样生效；只有 doubao-file / doubao-video 这类把整段音频交给服务端的通道才忽略它。
+    // 只对黄金三秒/结尾钩子/对标画像生效：员工二创链路要完整转写，不要给它传这个值。
     goldTranscriptClipSeconds: toInt(process.env.GOLD_TRANSCRIPT_CLIP_SECONDS, 5),
-    // 黄金三秒**专用**的 provider 顺序：默认把本地 ffmpeg 排在第一位。
+    // 黄金三秒**专用**的 provider 顺序。
     //
-    // 2026-09-17 实测（HANDOFF §4.4）：本地 ffmpeg + 裁剪 5s 比 TikHub 服务端的 ffmpeg
-    // 快 2~4 倍（有 mp3 直链 2.0s vs 5.5s；无直链 9.1s vs 12.3~15.4s）。而且**只有本地
-    // ffmpeg 吃得到 goldTranscriptClipSeconds 的裁剪** —— 全局链路里它排第 3，几乎轮不到，
-    // 裁剪等于死代码。
+    // 2026-10-18：首位从「录音文件识别 2.0（doubao-file）」换成「流式识别 2.0（doubao-stream）」。
+    // 流式通道会先用本地 ffmpeg 把音频抽成 16k PCM，所以 **goldTranscriptClipSeconds 的裁剪
+    // 对 doubao-stream 也生效**（head 只转开头 5 秒、tail 只转结尾 5 秒），不会因为换模型
+    // 又变成"整条视频都计费"。
+    // 同日第二次调整：链尾的极速版 flash 段（tikhub-music / tikhub-ffmpeg / ffmpeg）整体换成
+    // 「录音文件识别 2.0」（doubao-file，只收音频 URL，异步 submit/query），保持"主通道失败后
+    // 至少还有一条 URL 直取的 2.0 兜底"；三个 flash provider 保留在代码里，回滚时可手动放回。
     //
     // 显式传这个顺序还会关掉「有 TikHub 就跳过本地 ffmpeg」那条隐式优化（见 transcribeVideo），
-    // 否则顺序会被静默改回 TikHub 优先。TikHub 仍然留作兜底：本地 ffmpeg 失败会自动往下走。
-    // 想回到旧行为，把它设成与 TRANSCRIPT_PROVIDERS 一致或留空即可。
-    goldTranscriptProviders: splitCsv(process.env.GOLD_TRANSCRIPT_PROVIDERS, ["doubao-file", "doubao-video", "tikhub-music", "tikhub-ffmpeg", "ffmpeg"]),
+    // 否则顺序会被静默改回 TikHub 优先。
+    // 回滚到 flash 兜底：GOLD_TRANSCRIPT_PROVIDERS=doubao-stream,doubao-video,tikhub-music,tikhub-ffmpeg,ffmpeg
+    goldTranscriptProviders: splitCsv(process.env.GOLD_TRANSCRIPT_PROVIDERS, ["doubao-stream", "doubao-video", "doubao-file"]),
     // 设为 false 可整体关掉黄金三秒的转写，回到纯发布文案的行为。
     goldTranscriptEnabled: String(process.env.GOLD_TRANSCRIPT_ENABLED || "true").toLowerCase() !== "false",
     // 转写覆盖多少条 —— 与分析样本数（60）保持一致，否则部分大类只能靠发布文案推断。

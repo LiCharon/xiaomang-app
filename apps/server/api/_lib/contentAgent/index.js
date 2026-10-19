@@ -6,6 +6,8 @@ import { buildCreativeFallback, resolveTikHubVideo, resolveWeChatChannelsTopicVi
 import { buildCategoryAdaptation } from "../topicCreativeAdaptation.js";
 import { buildTitleAdaptation } from "../titleLibrary.js";
 import { getTopicLibraryCreativeAdaptation } from "../topicLibraryStore.js";
+import { getActiveReviewMemory } from "../weeklyAnalysisStore.js";
+import { applyReviewMemory } from "../weeklyCreativeAdaptation.js";
 import { GOLD_THREE_SECOND_TYPE_LABELS } from "../goldThreeSeconds.js";
 import { ENDING_HOOK_TYPE_LABELS } from "../endingHooks.js";
 
@@ -73,9 +75,14 @@ const buildContentAgentInputs = ({ shareLinks = [], benchmarkTopics = [], shareL
  * → 返回空表，下面 `runCreativeAgents` 会自动退回原来的自由二创提示词。
  * 二创是这个页面的主功能，不该因为「这个客户还没建库」就整条挂掉。
  */
-const loadAdaptationByLink = async ({ customerId, categoryNames, logger }) => {
+const loadAdaptationByLink = async ({ customerId, categoryNames, platforms = new Map(), logger }) => {
   const target = String(customerId || "").trim();
   if (!target || categoryNames.size === 0) return { map: new Map(), enabled: false };
+  const memories = new Map();
+  await Promise.all([...new Set(platforms.values())].filter(p => ['douyin', 'wechat_channels'].includes(p)).map(async platform => {
+    try { memories.set(platform, await getActiveReviewMemory({ customerId: target, platform })); }
+    catch (error) { logger?.warn('creative.review_memory_failed', { error: error.message }); }
+  }));
   let library = null;
   try {
     // 员工侧只读口径：不按 managerId 过滤（员工不是库的属主），只回配比来源。
@@ -85,16 +92,15 @@ const loadAdaptationByLink = async ({ customerId, categoryNames, logger }) => {
       code: error?.code || "TOPIC_LIBRARY_READ_FAILED",
       error: error instanceof Error ? error.message : "library read failed",
     });
-    return { map: new Map(), enabled: false };
   }
-  if (!library) {
+  if (!library && ![...memories.values()].some(Boolean)) {
     logger?.info("creative.adaptation.library_missing", { customerId: target });
     return { map: new Map(), enabled: false };
   }
 
   // 一个库可能有多个对标账号，各自一棵分类树。同一大类名在多个账号下都要能命中
   // —— 用「包含即命中」而不是「取第一个账号」，否则第二个账号的配比永远用不上。
-  const accounts = Array.isArray(library.accounts) ? library.accounts.filter(Boolean) : [];
+  const accounts = Array.isArray(library?.accounts) ? library.accounts.filter(Boolean) : [];
   const map = new Map();
   for (const [link, categoryName] of categoryNames.entries()) {
     const matches = accounts.map(account => ({
@@ -123,7 +129,8 @@ const loadAdaptationByLink = async ({ customerId, categoryNames, logger }) => {
       .filter(item => item.goldThreeSeconds.slots.length > 0
         || item.endingHooks.slots.length > 0
         || item.title.slots.length > 0);
-    if (matches.length > 0) map.set(link, { customerName: library.customerName, candidates: matches });
+    const memory = memories.get(platforms.get(link));
+    if (matches.length > 0 || memory) map.set(link, { customerName: library?.customerName || '', candidates: matches, memory, categoryName });
   }
 
   logger?.info("creative.adaptation.ready", {
@@ -147,19 +154,19 @@ const loadAdaptationByLink = async ({ customerId, categoryNames, logger }) => {
  */
 export const buildVideoAdaptation = entry => {
   const candidates = Array.isArray(entry?.candidates) ? entry.candidates : [];
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) return applyReviewMemory({ memory: entry?.memory, categoryName: entry?.categoryName });
   const slotCount = value => (Array.isArray(value?.slots) ? value.slots.length : 0);
   // 🔴 标题配比与三秒配比**同源**（都来自 2.2 报告），所以这里刻意**不把标题
   //    算进分数**：算了等于把同一份报告数两遍，「纳入更完整」的判断会被
   //    重复计数带偏。总分仍然只以三秒 + 结尾钩子两份来分析。
   const score = item => slotCount(item.goldThreeSeconds) + slotCount(item.endingHooks);
   const best = candidates.reduce((current, item) => (score(item) > score(current) ? item : current), candidates[0]);
-  return {
+  return applyReviewMemory({ memory: entry?.memory, categoryName: entry?.categoryName, adaptation: {
     accountName: best.accountName,
     goldThreeSeconds: best.goldThreeSeconds || null,
     endingHooks: best.endingHooks || null,
     title: best.title || null,
-  };
+  } });
 };
 
 export const runContentAgent = async (shareLinksOrInputs, options = {}) => {
@@ -187,6 +194,7 @@ export const runContentAgent = async (shareLinksOrInputs, options = {}) => {
   // 选题库配比：一次读库、按链接挂到每条视频上（读不到就是空表，自动降级）。
   const adaptationContext = await loadAdaptationByLink({
     customerId: options.customerId,
+    platforms: new Map(inputs.map(input => [input.shareLink, input.platform])),
     categoryNames: options.categoryNames instanceof Map ? options.categoryNames : new Map(),
     logger,
   });

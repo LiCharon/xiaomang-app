@@ -2,6 +2,8 @@ import { spawn } from "child_process";
 import { randomUUID } from "crypto";
 import { Transform } from "stream";
 import { Readable } from "stream";
+import { extractPcmAudio } from "./audioPcm.js";
+import { recognizeDoubaoStreamAudio } from "./asrStreamClient.js";
 import { EnvHttpProxyAgent, ProxyAgent, fetch as undiciFetch } from "undici";
 import {
   AgentError,
@@ -2138,6 +2140,77 @@ export const understandDoubaoImage = async (imageUrl, prompt, config, options = 
   return text;
 };
 
+// 流式识别 2.0 的重试白名单：只重试「连接/超时/坏帧」这类可恢复错误。
+// 凭据缺失（配置问题）、空文本（再跑一遍大概率还是空，且会重复计费）都不重试。
+const STREAM_RETRYABLE_CODES = new Set([
+  "DOUBAO_STREAM_ASR_FAILED",
+  "DOUBAO_STREAM_ASR_TIMEOUT",
+  "DOUBAO_STREAM_ASR_BAD_FRAME",
+]);
+
+/**
+ * 流式识别 2.0 的「同一份 PCM 重试一次」包装（2026-10-18 A 方案）。
+ *
+ * 为什么必须在 provider 层重试、而不是让上层重新抽音频：
+ *   · 视频号的解密流是**一次性**的，`prepareVideoInput` 只能消费一次；重新抽 PCM 等于重新
+ *     下载 + 解密整条视频，代价很高；
+ *   · PCM 已经以 Buffer 形式在内存里，WS 失败时直接复用同一份 PCM 再连一次即可。
+ *
+ * 预算：第一次用 `doubaoStreamAsrBudgetMs`（默认 120s）；第二次重试默认压到 60s，
+ * 避免 120s + 120s 叠加把端点 maxDuration（300s）和批预算（240s）顶穿。
+ * 只对「可恢复错误」重试；空文本/缺凭据/输入缺失直接抛给 provider 链。
+ *
+ * @param {object} options
+ * @param {Buffer|Uint8Array} options.pcm
+ * @param {object} options.config
+ * @param {object} [options.logger]
+ * @param {number} [options.maxAttempts=2] 总尝试次数（含第一次）
+ * @param {number} [options.retryBudgetMs=60000] 第二次及以后每次的 WS 预算
+ * @param {number} [options.retryDelayMs=300]
+ * @param {Function} [options.recognizeImpl] 测试注入点，默认 recognizeDoubaoStreamAudio
+ */
+export const recognizeDoubaoStreamAudioWithRetry = async ({
+  pcm,
+  config,
+  logger,
+  maxAttempts = 2,
+  retryBudgetMs = 60000,
+  retryDelayMs = 300,
+  recognizeImpl = recognizeDoubaoStreamAudio,
+} = {}) => {
+  const attempts = Math.max(1, Math.floor(Number(maxAttempts) || 2));
+  const baseBudget = Number(config?.doubaoStreamAsrBudgetMs) || 120000;
+  const retryBudget = Math.max(1000, Math.min(Number(retryBudgetMs) || 60000, baseBudget));
+  let lastError = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      const attemptConfig = attempt === 1
+        ? config
+        : { ...config, doubaoStreamAsrBudgetMs: retryBudget };
+      return await recognizeImpl({ pcm, config: attemptConfig, logger });
+    } catch (error) {
+      lastError = error;
+      const code = error?.code || "";
+      const retryable = !code || STREAM_RETRYABLE_CODES.has(code);
+      if (!retryable || attempt >= attempts) throw error;
+
+      logger?.warn("doubao.stream.asr.retry", {
+        attempt,
+        nextAttempt: attempt + 1,
+        maxAttempts: attempts,
+        code,
+        error: error instanceof Error ? error.message : "Doubao stream ASR failed",
+        retryBudgetMs: retryBudget,
+        audioBytes: pcm?.length || 0,
+      });
+      await sleep(Math.max(0, Number(retryDelayMs) || 0));
+    }
+  }
+
+  throw lastError;
+};
+
 export const transcribeVideo = async (videoMeta, config, options = {}) => {
   const onProgress = typeof options.onProgress === "function" ? options.onProgress : () => {};
   const logger = options.logger;
@@ -2238,6 +2311,89 @@ export const transcribeVideo = async (videoMeta, config, options = {}) => {
             step: "doubao-file",
             code: error?.code,
             message: error instanceof Error ? error.message : "doubao-file provider failed",
+          });
+          continue;
+        }
+      }
+      // ── 豆包流式/实时语音识别 2.0（WebSocket，2026-10-18）────────────────
+      // 与 doubao-file 的关键差别：
+      //   · 音频不再交给服务端自己拉 URL，而是本地 ffmpeg 抽成 16k s16le PCM，
+      //     经 WebSocket 二进制帧发送（burst 全速，实测 26.8s 音频约 2.6s 出结果）；
+      //   · 因为 PCM 在本地裁剪，head/tail 的 5 秒 clip 对这条通道**真的生效**，
+      //     不会像 doubao-file 那样整条音频计费；
+      //   · 视频号用 prepareVideoInput 解密出来的 stream 作为输入，不再依赖公网 URL。
+      // 失败/超时统一交给 provider 链回退，不影响其它通道。
+      if (provider === "doubao-stream") {
+        const providerStartedAt = Date.now();
+        try {
+          onProgress({
+            step: "transcript-provider-start",
+            provider,
+            message: "尝试转写方案：doubao-stream（流式识别 2.0，本地抽 PCM 后 WebSocket 发送）",
+          });
+          const pcmAudio = await extractPcmAudio(videoMeta, prepared, config, {
+            clipSeconds,
+            tailSeconds,
+            // head 裁剪（2.2/2.3/1.2 只取开头几秒）启用 fast-probe，明显减少远端探测开销；
+            // 完整转写/尾部不启用（与既有 ffmpeg provider 的口径一致）。
+            fastProbe: clipSeconds > 0 && tailSeconds === 0,
+            logger,
+          });
+          // A 方案：PCM 只抽一次；WS 失败用同一份 PCM 重试一次（视频号解密流无法二次消费）。
+          const asr = await recognizeDoubaoStreamAudioWithRetry({
+            pcm: pcmAudio.pcm,
+            config,
+            logger,
+          });
+          const text = String(asr?.text || "").trim();
+          if (!text) {
+            throw new AgentError("豆包流式识别返回空文本", { code: "DOUBAO_STREAM_ASR_EMPTY" });
+          }
+          // provider 标签里带上裁剪口径，报告/DB 里能直接看出这条转写取的是开头还是结尾。
+          const clipLabel = tailSeconds > 0 ? `+tail${tailSeconds}s` : (clipSeconds > 0 ? `+clip${clipSeconds}s` : "");
+          const value = {
+            text,
+            utterances: Array.isArray(asr.utterances) ? asr.utterances : [],
+            logid: asr.logid,
+            duration: asr.duration,
+            provider: `doubao-stream-asr${clipLabel}`,
+            warnings,
+          };
+          logger?.info("transcript.provider.success", {
+            provider: value.provider,
+            videoTitle: videoMeta.title,
+            textLength: text.length,
+            audioBytes: pcmAudio.bytes,
+            audioSourceKind: pcmAudio.sourceKind,
+            elapsedMs: Date.now() - providerStartedAt,
+          });
+          onProgress({
+            step: "transcript-provider-success",
+            provider: value.provider,
+            message: `转写方案成功：${value.provider}`,
+          });
+          transcriptCache.set(cacheKey, { createdAt: Date.now(), value });
+          return value;
+        } catch (error) {
+          logger?.warn("transcript.provider.failed", {
+            provider,
+            videoTitle: videoMeta.title,
+            code: error?.code,
+            error: error instanceof Error ? error.message : "doubao-stream provider failed",
+          });
+          onProgress({
+            step: "transcript-provider-failed",
+            provider,
+            level: "warn",
+            message: `转写方案失败：${provider}`,
+            detail: error instanceof Error ? error.message : "doubao-stream provider failed",
+            code: error?.code,
+          });
+          warnings.push({
+            provider,
+            step: "doubao-stream",
+            code: error?.code,
+            message: error instanceof Error ? error.message : "doubao-stream provider failed",
           });
           continue;
         }

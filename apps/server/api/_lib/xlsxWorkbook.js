@@ -12,7 +12,8 @@ import zlib from "node:zlib";
  * 不用关心 sharedStrings、inlineStr、STORE、跳号行这些差异，拿到手就是补齐过的表格。
  *
  * 刻意不做的事：数值不做类型推断（一律原样透传，避免科学计数法与长小数丢精度），
- * 也不按样式表把序列号翻成日期 —— 那要再解析 xl/styles.xml，属于另一种口径。
+ * 默认不解析样式。AI 表格识别入口可显式开启 preservePercentFormat，保留百分比样式的含义；
+ * 日期序列仍由上层按实际字段解释。
  */
 
 const SIG_EOCD = 0x06054b50;
@@ -258,7 +259,7 @@ const columnIndex = (ref) => {
   return value - 1;
 };
 
-const readCellValue = (attrs, body, sharedStrings) => {
+const readCellValue = (attrs, body, sharedStrings, percentStyles) => {
   const type = attrs.get("t") || "n";
 
   // 内联字符串：值在 <is> 里，可能还是富文本。
@@ -283,6 +284,9 @@ const readCellValue = (attrs, body, sharedStrings) => {
     case "e":
       return text;
     default:
+      if (percentStyles?.has(Number(attrs.get('s') || 0)) && text && Number.isFinite(Number(text))) {
+        return `${Number((Number(text) * 100).toPrecision(15))}%`;
+      }
       // 数值 / n：原样保留字面量，科学计数法（1E+20）与长小数不会被 Number() 抹掉。
       return text;
   }
@@ -294,7 +298,7 @@ const readCellValue = (attrs, body, sharedStrings) => {
  * 行号看 `r`、列号看单元格的 `r`，中途跳过的行和格子一律补 `""`，最后按最宽的一行
  * 对齐 —— 上层（尤其 rowsToObjects）最怕的就是行长短不一导致的错位。
  */
-const parseSheetRows = (xml, sharedStrings) => {
+const parseSheetRows = (xml, sharedStrings, percentStyles) => {
   const rows = [];
   for (const rowBlock of eachBlock(xml, "row")) {
     const declared = Number.parseInt(parseAttrs(rowBlock.tag).get("r") ?? "", 10);
@@ -309,7 +313,7 @@ const parseSheetRows = (xml, sharedStrings) => {
       const at = columnIndex(cellAttrs.get("r"));
       const position = at >= 0 ? at : cursor;
       while (cells.length < position) cells.push("");
-      cells[position] = readCellValue(cellAttrs, cellBlock.body, sharedStrings);
+      cells[position] = readCellValue(cellAttrs, cellBlock.body, sharedStrings, percentStyles);
       cursor = position + 1;
     }
     rows[index] = cells;
@@ -413,16 +417,30 @@ const ensureBuffer = (buffer) => {
  * @param {Buffer} buffer .xlsx 文件内容
  * @returns {{ name: string, rows: string[][] }[]} 每个工作表一项，行已补齐成等长字符串
  */
-export const readWorkbook = (buffer) => {
+export const readWorkbook = (buffer, { preservePercentFormat = false } = {}) => {
   const bytes = ensureBuffer(buffer);
   const entries = readZipEntries(bytes);
   const sheets = parseSheetList(bytes, entries);
   const sharedStrings = parseSharedStrings(readEntryText(bytes, entries, "xl/sharedStrings.xml"));
+  const percentStyles = new Set();
+  if (preservePercentFormat) {
+    const styles = readEntryText(bytes, entries, 'xl/styles.xml');
+    const formats = new Set([9, 10]);
+    for (const block of eachBlock(styles, 'numFmt')) {
+      const attrs = parseAttrs(block.tag);
+      const code = String(attrs.get('formatcode') || '').replace(/"[^"]*"/g, '');
+      if (/(^|[^\\])%/.test(code)) formats.add(Number(attrs.get('numfmtid')));
+    }
+    const cellXfs = firstBlock(styles, 'cellXfs');
+    if (cellXfs) [...eachBlock(cellXfs.body, 'xf')].forEach((block, index) => {
+      if (formats.has(Number(parseAttrs(block.tag).get('numfmtid')))) percentStyles.add(index);
+    });
+  }
 
   return sheets.map((sheet) => {
     const xml = readEntryText(bytes, entries, sheet.path);
     // 关系表指向了不存在的部件：这一张给空表，不因为一个坏部件丢掉整份文件。
-    return { name: sheet.name, rows: xml ? parseSheetRows(xml, sharedStrings) : [] };
+    return { name: sheet.name, rows: xml ? parseSheetRows(xml, sharedStrings, percentStyles) : [] };
   });
 };
 

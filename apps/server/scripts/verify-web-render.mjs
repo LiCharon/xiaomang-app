@@ -52,7 +52,15 @@ import { MemoryRouter, useNavigate, useSearchParams } from "react-router";
 //    写混了就是 "Element type is invalid ... got: undefined"，正是本脚本要抓的那类错。
 import AccountPositioningPage from "./src/app/AccountPositioningPage.tsx";
 import { VideoAnalysisStage } from "./src/app/VideoAnalysisStage.tsx";
-export { renderToString, createElement, MemoryRouter, AccountPositioningPage, VideoAnalysisStage };
+import { WeeklyAnalysisStage, WeeklyReportView } from "./src/app/WeeklyAnalysisStage.tsx";
+import { ReviewVideoFields } from './src/app/ReviewVideoFields.tsx';
+import { ReviewWorkbookImport } from './src/app/ReviewWorkbookImport.tsx';
+import { getReviewInputOptions } from '../server/api/_lib/reviewWorkbookRecognition.js';
+import { buildWeeklyAnalysisReport } from "../server/api/_lib/weeklyAnalysis.js";
+import { weeklyInput, weeklyDictionary } from "../server/tests/helpers/weekly-fixture.mjs";
+export { renderToString, createElement, MemoryRouter, AccountPositioningPage, VideoAnalysisStage, WeeklyAnalysisStage, WeeklyReportView };
+export { ReviewVideoFields, ReviewWorkbookImport, getReviewInputOptions };
+export const weeklyReport = buildWeeklyAnalysisReport({input: weeklyInput(), categoryDictionary: weeklyDictionary});
 `;
 
 const checks = [];
@@ -108,8 +116,8 @@ try {
   const stageFull = check("4.1 阶段组件能渲染（整页）", () =>
     renderToString(createElement(VideoAnalysisStage, {})));
 
-  check("  渲染出「第一步 选择客户并上传数据」", () => stageText.includes("第一步"));
-  check("  说明数据只能人工上传（分析的是自己账号的视频）", () => stageText.includes("自己账号已发布的视频"));
+  check("  渲染出数据填写入口", () => stageText.includes("第一步"));
+  check("  说明分析的是自己账号的视频", () => stageText.includes("自己账号已发布的视频"));
   check("  给出 .xlsx 格式提示（.xls 要另存为）", () => stageText.includes("xlsx") && stageText.includes("另存为"));
   check("  有客户下拉", () => stageHtml.includes("<select"));
   check("  有文件选择控件", () => stageHtml.includes('type="file"'));
@@ -136,10 +144,26 @@ try {
     ["对标账号分析", "账号规划", "选题库构建", "复盘分析"].every(text => pageText.includes(text)));
   check("  模块 4 的子步骤轨道渲染出 4.1", () => pageText.includes("4.1") && pageText.includes("视频数据分析"));
   check("  模块 4 的子步骤轨道渲染出 4.2", () => pageText.includes("4.2") && pageText.includes("账号数据分析"));
-  check("  4.1 挂的是真组件（不是「待实现」面板）", () => pageText.includes("第一步") && pageText.includes("上传数据"));
-  check("  4.2 如实标「待实现」（二期未做不假装已做）", () => pageText.includes("待实现"));
+  check("  4.1 挂的是真组件（不是「待实现」面板）", () => pageText.includes("第一步") && pageText.includes("数据填写方式"));
+  check("  4.2 已开放（不再显示待实现）", () => !pageText.includes("待实现"));
   check("  页面没落进 ErrorBoundary 兜底文案", () =>
     !pageText.includes("出了点问题") && !pageText.includes("渲染出错") && !pageText.includes("页面出错了"));
+
+  globalThis.window.sessionStorage.getItem = key => key.endsWith('activeModuleId') ? '"review"' : key.endsWith('activeStepId') ? '"account-review"' : null;
+  const weeklyPage = check('4.2 导航挂载周度分析真实组件', () => renderToString(createElement(MemoryRouter, null, createElement(AccountPositioningPage))));
+  check('4.2 显示周度填写入口', () => strip(weeklyPage).includes('填写并核对一周视频数据') && !strip(weeklyPage).includes('还没有实现'));
+  const weeklyStage = check('4.2 独立阶段可渲染', () => renderToString(createElement(bundle.WeeklyAnalysisStage)));
+  check('4.2 有账号、周期、条数输入', () => strip(weeklyStage).includes('账号名称') && strip(weeklyStage).includes('下周计划条数') && weeklyStage.includes('type="date"'));
+  const weeklyReport = check('4.2 完整周报可渲染（有真实形状的统计）', () => renderToString(createElement(bundle.WeeklyReportView, { report: bundle.weeklyReport })));
+  check('4.2 周报含绝对、相对、流量池与建议', () => ['绝对数据', '相对数据', '流量池分层', '优化建议方案'].every(s => strip(weeklyReport).includes(s)));
+  check('4.2 缺 AI 建议显示待人工补充', () => strip(weeklyReport).includes('待人工补充'));
+  check('4.1 默认显示数据表单，无需先上传 Excel', () => stageText.includes('直接填写') && stageText.includes('视频文案') && stageText.includes('开始分析'));
+  check('4.2 默认可逐条填写并添加视频', () => strip(weeklyStage).includes('添加视频') && weeklyStage.includes('视频1发布时间'));
+  const fields = check('平台字段表单可真实渲染', () => renderToString(createElement(bundle.ReviewVideoFields, { row: bundle.weeklyReport.sourceRows[0], onChange: () => {}, options: bundle.getReviewInputOptions('douyin') })));
+  check('表单保留百分比值、零值与专业指标含义', () => fields.includes('32%') && strip(fields).includes('5s 完播率') && strip(fields).includes('反映开场'));
+  const wechatFields = check('视频号字段表单可真实渲染', () => renderToString(createElement(bundle.ReviewVideoFields, { row: bundle.weeklyReport.sourceRows[0], onChange: () => {}, options: bundle.getReviewInputOptions('wechat_channels') })));
+  check('切平台后展示正确指标', () => wechatFields.includes('aria-label="3 秒以上播放率"') && !wechatFields.includes('aria-label="2s 跳出率"'));
+  check('Excel 识别入口可真实渲染', () => renderToString(createElement(bundle.ReviewWorkbookImport, { platform: 'douyin', mode: 'weekly', options: bundle.getReviewInputOptions('douyin'), onImport: () => {}, onBusyChange: () => {} })));
 
   console.log("── 前端真渲染检查（服务端渲染）──");
   let failed = 0;

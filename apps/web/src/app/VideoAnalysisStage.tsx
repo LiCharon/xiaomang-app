@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CheckCircle2, CloudUpload, FileSpreadsheet, Info, LoaderCircle, Sparkles, Trash2 } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, CheckCircle2, LoaderCircle, Trash2 } from "lucide-react";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
@@ -8,34 +8,20 @@ import {
   deleteVideoReview,
   listReviewCustomers,
   listVideoReviewsForCustomer,
-  parseReviewWorkbook,
   saveVideoReview,
-  type ParsedWorkbook,
   type ReviewPlatform,
   type SavedVideoReviewSummary,
   type VideoAnalysisReport,
 } from "./reviewApi";
 
-/**
- * 模块 4「复盘分析」的 4.1 单条视频数据分析。
- *
- * 🔴 这一页与账号定位其它阶段最大的不同：**输入是人家的 Excel**。
- *
- *   分析对象是**客户自己发布的视频**，不是选题库里那些对标视频 ——
- *   所以系统抓不到、也不能自动补，只能由人工从平台后台导出后上传。
- *
- *   于是流程被拆成两段，中间**必须有人工确认**：
- *
- *     ① 上传 Excel → 后端解析 → **用户确认每一列是什么**
- *     ② 用确认后的映射跑分析 → 出报告 → 用户看过再保存
- *
- *   为什么要确认列映射：Excel 的百分比列可能是 `0.32`、`32`、`"32%"`，
- *   而且表头各家写各家的。猜错一列的口径，整份报告的结论会全错，
- *   而用户从界面上**看不出来**。所以自动识别只给建议，最终由人拍板。
- *
- * ⚠️ 结构标签（选题类型 / 3s / 标题 / 结尾钩子）可以留空让 Agent 从文案判 ——
- *    人工填了的**优先**，Agent 只补空的那几项。
- */
+import { getReviewInputOptions, type ReviewInputOptions } from './reviewInputApi';
+import { createReviewRow, validateReviewFormRows } from './reviewInputRows';
+import { ReviewVideoFields } from './ReviewVideoFields';
+import { ReviewWorkbookImport } from './ReviewWorkbookImport';
+import { getTopicCategoryDictionary, type TopicTagDictionaryEntry } from './topicLibrary';
+import type { WeeklyRow } from './weeklyReviewApi';
+
+/** 4.1 supports direct forms, deterministic Excel mapping, and AI-assisted import. */
 
 const PLATFORMS: Array<{ key: ReviewPlatform; label: string }> = [
   { key: "douyin", label: "抖音" },
@@ -58,444 +44,80 @@ const STRUCTURE_TONE: Record<string, string> = {
   missing: "bg-amber-100 text-amber-700",
 };
 
-/** 文案列不是「指标」，它是单独一列用途，所以在映射下拉里单独给一个选项。 */
-const SCRIPT_COLUMN = "__script__";
-
 export function VideoAnalysisStage({ embedded = false, onSaved }: { embedded?: boolean; onSaved?: () => void }) {
   const [customers, setCustomers] = useState<Array<{ id: string; name: string }>>([]);
-  const [customerId, setCustomerId] = useState("");
-  const [platform, setPlatform] = useState<ReviewPlatform>("douyin");
-
-  const [workbook, setWorkbook] = useState<ParsedWorkbook | null>(null);
-  const [mapping, setMapping] = useState<Record<string, string>>({});
-  const [rowIndex, setRowIndex] = useState(0);
-  const [scriptColumn, setScriptColumn] = useState("");
-  const [script, setScript] = useState("");
-  const [videoTitle, setVideoTitle] = useState("");
-  const [videoLink, setVideoLink] = useState("");
-
+  const [customerId, setCustomerId] = useState('');
+  const [platform, setPlatform] = useState<ReviewPlatform>('douyin');
+  const [source, setSource] = useState<'manual' | 'excel'>('manual');
+  const [row, setRow] = useState(() => createReviewRow('single-video'));
+  const [options, setOptions] = useState<ReviewInputOptions | null>(null);
+  const [dictionary, setDictionary] = useState<TopicTagDictionaryEntry[]>([]);
   const [report, setReport] = useState<VideoAnalysisReport | null>(null);
   const [history, setHistory] = useState<SavedVideoReviewSummary[]>([]);
-  const [parsing, setParsing] = useState(false);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [error, setError] = useState("");
-  const [message, setMessage] = useState("");
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
-
+  const [busy, setBusy] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const locked = useRef(false);
   useEffect(() => {
     let cancelled = false;
-    listReviewCustomers()
-      .then(items => { if (!cancelled) setCustomers(items); })
-      .catch(() => { if (!cancelled) setCustomers([]); });
+    listReviewCustomers().then(items => { if (!cancelled) setCustomers(items); }).catch(e => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, []);
-
-  // 换客户要清掉上一家的分析结果 —— 否则用户会拿着 A 客户的报告以为是 B 客户的。
   useEffect(() => {
-    setReport(null);
-    setError("");
-    setMessage("");
-    if (!customerId) return undefined;
-    let cancelled = false;
-    listVideoReviewsForCustomer(customerId)
-      .then(items => { if (!cancelled) setHistory(items); })
-      .catch(() => { if (!cancelled) setHistory([]); });
+    let cancelled = false; setOptions(null);
+    getReviewInputOptions(platform).then(o => { if (!cancelled) setOptions(o); }).catch(e => { if (!cancelled) setError(e.message); });
+    return () => { cancelled = true; };
+  }, [platform]);
+  useEffect(() => {
+    let cancelled = false; setReport(null); setHistory([]); setDictionary([]);
+    if (customerId) Promise.all([listVideoReviewsForCustomer(customerId), getTopicCategoryDictionary(customerId)]).then(([h, d]) => {
+      if (!cancelled) { setHistory(h); setDictionary(d?.tagDictionary || []); }
+    }).catch(e => { if (!cancelled) setError(e.message); });
     return () => { cancelled = true; };
   }, [customerId]);
-
-  const metricOptions = workbook?.metricOptions || [];
-
-  /** 反查：指标 key → 选了它的那一列。用于提示「还缺哪个指标」。 */
-  const columnOfMetric = useMemo(() => {
-    const map: Record<string, string> = {};
-    for (const [header, key] of Object.entries(mapping)) {
-      if (key && key !== SCRIPT_COLUMN) map[key] = header;
-    }
-    return map;
-  }, [mapping]);
-
-  const missingMetrics = useMemo(
-    () => metricOptions.filter(item => !item.optional && !columnOfMetric[item.key]),
-    [metricOptions, columnOfMetric],
-  );
-
-  const currentRow = workbook?.records?.[rowIndex] || null;
-
-  /** 把当前行按映射读成指标对象。**原样传字符串**，归一化交给后端（唯一口径）。 */
-  const metricsFromRow = useMemo(() => {
-    if (!currentRow) return {};
-    const result: Record<string, string> = {};
-    for (const [header, key] of Object.entries(mapping)) {
-      if (!key || key === SCRIPT_COLUMN) continue;
-      result[key] = currentRow[header] ?? "";
-    }
-    return result;
-  }, [currentRow, mapping]);
-
-  const pickFile = async (file: File | null) => {
-    if (!file) return;
-    setParsing(true);
-    setError("");
-    setMessage("");
-    setReport(null);
-    try {
-      const parsed = await parseReviewWorkbook(file, { platform });
-      setWorkbook(parsed);
-      setMapping({ ...parsed.suggestedMapping });
-      setRowIndex(0);
-      setScriptColumn("");
-      setScript("");
-      setVideoTitle("");
-      setVideoLink("");
-      const unknown = parsed.unmatchedHeaders.length;
-      setMessage(
-        `已解析「${parsed.sheetName}」：${parsed.rows.length} 行数据。`
-        + `自动认出 ${Object.keys(parsed.suggestedMapping).length} 列`
-        + (unknown > 0 ? `，还有 ${unknown} 列没认出（用不上的列可以留空）` : "")
-        + "。请确认下面的列对应关系。",
-      );
-    } catch (e) {
-      setWorkbook(null);
-      setError(e instanceof Error ? e.message : "Excel 解析失败");
-    } finally {
-      setParsing(false);
-      if (fileInputRef.current) fileInputRef.current.value = "";
-    }
+  const run = async (label: string, action: () => Promise<void>) => {
+    if (locked.current || importing) return; locked.current = true; setBusy(label); setError(''); setMessage('');
+    try { await action(); } catch (e) { setError(e instanceof Error ? e.message : '操作失败'); }
+    finally { locked.current = false; setBusy(''); }
   };
-
-  const runAnalysis = async () => {
-    if (!customerId) { setError("请先选择客户"); return; }
-    if (!workbook) { setError("请先上传这个视频的数据 Excel"); return; }
-    setAnalyzing(true);
-    setError("");
-    setMessage("");
-    try {
-      const result = await analyzeVideoReview({
-        customerId,
-        platform,
-        metrics: metricsFromRow,
-        script,
-        video: { title: videoTitle || String(currentRow?.[workbook.headers[0]] || ""), link: videoLink },
-      });
-      setReport(result);
-      setMessage(
-        result.analysisSource === "agent"
-          ? "分析完成。请核对下面的判定与建议，确认无误后保存。"
-          : "分析完成（AI 建议这次没跑成功，已给出纯数据结论，建议文字需人工补充）。",
-      );
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "分析失败");
-    } finally {
-      setAnalyzing(false);
-    }
-  };
-
-  const save = async () => {
+  const updateRow = (value: WeeklyRow) => { setRow(value); setReport(null); setMessage(''); };
+  const runAnalysis = () => void run('正在分析…', async () => {
+    if (!customerId) throw new Error('请先选择客户');
+    validateReviewFormRows([row], 'single');
+    const result = await analyzeVideoReview({ customerId, platform, metrics: row.metrics, script: row.script,
+      video: { title: row.title, link: row.link, publishedAt: row.publishedAt }, structureTags: row.structureTags });
+    setReport(result);
+    setMessage(result.analysisSource === 'agent' ? '分析完成。请核对判定与建议，确认无误后保存。' : '分析完成。AI 建议暂不可用，数据判定仍可使用，建议文字待人工补充。');
+  });
+  const save = () => void run('保存报告…', async () => {
     if (!report || !customerId) return;
-    setSaving(true);
-    setError("");
-    try {
-      const saved = await saveVideoReview({
-        customerId,
-        customerName: customers.find(item => item.id === customerId)?.name || "",
-        report,
-      });
-      setMessage(`已保存（${saved.videoTitle || "未命名视频"}）。`);
-      setHistory(await listVideoReviewsForCustomer(customerId));
-      onSaved?.();
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "保存失败");
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeHistory = async (id: string) => {
-    try {
-      await deleteVideoReview(id);
-      if (customerId) setHistory(await listVideoReviewsForCustomer(customerId));
-      setMessage("已删除。");
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "删除失败");
-    }
-  };
-
-  const body = (
-    <div className="space-y-5">
-      {error && <div className="whitespace-pre-wrap rounded-xl border border-rose-100 bg-rose-50 px-4 py-3 text-xs leading-5 text-rose-700">{error}</div>}
-      {message && <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-xs leading-5 text-emerald-700">{message}</div>}
-
-      {/* ── 第一步：客户 / 平台 / 上传 ─────────────────────────────────── */}
-      <Card>
-        <CardHeader><CardTitle className="text-base">第一步　选择客户并上传数据</CardTitle></CardHeader>
-        <CardContent className="space-y-4">
-          <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
-            <div className="flex items-start gap-2">
-              <Info className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-              <div>
-                这里分析的是<strong>你自己账号已发布的视频</strong>，数据要在平台后台导出成 Excel 再上传 ——
-                系统看不到这些数据，也不会去抓。请用<strong>.xlsx</strong>格式（老式 .xls 请先在 Excel 里「另存为」）。
-              </div>
-            </div>
-          </div>
-
-          <div className="grid gap-3 sm:grid-cols-2">
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">客户</span>
-              <select
-                value={customerId}
-                onChange={event => setCustomerId(event.target.value)}
-                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500"
-              >
-                <option value="">请选择客户</option>
-                {customers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
-              </select>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-400">复盘要用该客户的选题库来判断「选题大类 / 小类」。</span>
-            </label>
-
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">平台</span>
-              <select
-                value={platform}
-                onChange={event => { setPlatform(event.target.value as ReviewPlatform); setWorkbook(null); setReport(null); }}
-                className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500"
-              >
-                {PLATFORMS.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}
-              </select>
-              <span className="mt-1 block text-[11px] leading-4 text-slate-400">两个平台的指标与标准值不同（视频号看「3 秒以上播放率」）。</span>
-            </label>
-          </div>
-
-          <div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".xlsx,.xlsm"
-              onChange={event => pickFile(event.target.files?.[0] || null)}
-              className="hidden"
-              id="review-workbook-input"
-            />
-            <label
-              htmlFor="review-workbook-input"
-              className="flex cursor-pointer items-center justify-center gap-2 rounded-xl border border-dashed border-slate-300 bg-slate-50/60 px-4 py-6 text-sm text-slate-600 transition hover:border-blue-300 hover:bg-blue-50/40"
-            >
-              {parsing ? <LoaderCircle className="h-4 w-4 animate-spin" /> : <CloudUpload className="h-4 w-4" />}
-              {parsing ? "正在解析…" : workbook ? `已选择：${workbook.fileName}（点击可换一个）` : "点击选择 Excel 文件"}
-            </label>
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* ── 第二步：确认列映射 ─────────────────────────────────────────── */}
-      {workbook && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2 text-base">
-              <FileSpreadsheet className="h-4 w-4 text-slate-500" />
-              第二步　确认每一列是什么
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-xs leading-5 text-slate-500">
-              下面是自动识别的结果，<strong>请逐列核对</strong>。识别错一列（尤其是百分比列）会让整份报告的结论全错，
-              所以这一屏就是要你拍板的地方。用不上的列选「（不使用）」。
-            </p>
-
-            <div className="overflow-hidden rounded-xl border border-slate-200">
-              <table className="w-full text-xs">
-                <thead className="bg-slate-50 text-slate-500">
-                  <tr>
-                    <th className="px-3 py-2 text-left font-medium">Excel 列名</th>
-                    <th className="px-3 py-2 text-left font-medium">样例值</th>
-                    <th className="px-3 py-2 text-left font-medium">它是什么</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {workbook.headers.map((header, index) => (
-                    <tr key={`${header}-${index}`}>
-                      <td className="px-3 py-2 font-medium text-slate-800">{header || `（第 ${index + 1} 列，无表头）`}</td>
-                      <td className="max-w-[180px] truncate px-3 py-2 text-slate-500">{currentRow?.[header] ?? ""}</td>
-                      <td className="px-3 py-2">
-                        <select
-                          value={mapping[header] || ""}
-                          onChange={event => setMapping(previous => ({ ...previous, [header]: event.target.value }))}
-                          className="h-8 w-full min-w-[190px] rounded-lg border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-500"
-                        >
-                          <option value="">（不使用）</option>
-                          <option value={SCRIPT_COLUMN}>视频文案（用于判断结构类型）</option>
-                          <optgroup label="互动数据">
-                            {metricOptions.filter(item => item.group === "engagement").map(item => (
-                              <option key={item.key} value={item.key}>{item.label}　—　{item.meaning}</option>
-                            ))}
-                          </optgroup>
-                          <optgroup label="专业数据（平台后台）">
-                            {metricOptions.filter(item => item.group === "professional").map(item => (
-                              <option key={item.key} value={item.key}>{item.label}　—　{item.meaning}</option>
-                            ))}
-                          </optgroup>
-                        </select>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {/* 文案列：选了就从那一列取，没选就手填 */}
-            <div className="rounded-xl border border-slate-200 bg-slate-50/60 px-4 py-3">
-              <div className="flex flex-wrap items-center gap-3">
-                <span className="text-xs font-medium text-slate-600">视频文案从哪来</span>
-                <select
-                  value={scriptColumn}
-                  onChange={event => {
-                    const value = event.target.value;
-                    setScriptColumn(value);
-                    if (value && value !== SCRIPT_COLUMN) setScript(String(currentRow?.[value] ?? ""));
-                  }}
-                  className="h-8 rounded-lg border border-slate-200 bg-white px-2 text-xs outline-none focus:border-blue-500"
-                >
-                  <option value="">手动填写</option>
-                  {workbook.headers.filter(Boolean).map(header => <option key={header} value={header}>{header}</option>)}
-                </select>
-                <span className="text-[11px] text-slate-400">文案是判断「3 秒 / 标题 / 结尾钩子」类型的依据；不填就只能人工指定或落「待人工复核」。</span>
-              </div>
-            </div>
-
-            {missingMetrics.length > 0 && (
-              <div className="rounded-xl border border-amber-100 bg-amber-50 px-4 py-3 text-xs leading-5 text-amber-700">
-                <div className="flex items-start gap-2">
-                  <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                  <div>
-                    还有这些指标没有对应到列：<strong>{missingMetrics.map(item => item.label).join("、")}</strong>。
-                    缺了它们，对应的结构判定会显示「数据缺失」而不是给结论 —— <strong>这是如实反映，不是故障</strong>。
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {workbook.rows.length > 1 && (
-              <div>
-                <div className="mb-2 text-xs font-medium text-slate-600">这个文件里有 {workbook.rows.length} 行，选要分析的那一条</div>
-                <div className="max-h-52 overflow-auto rounded-xl border border-slate-200">
-                  <table className="w-full text-xs">
-                    <tbody className="divide-y divide-slate-100">
-                      {workbook.rows.slice(0, 200).map((row, index) => (
-                        <tr key={index} className={index === rowIndex ? "bg-blue-50" : ""}>
-                          <td className="w-10 px-3 py-2">
-                            <input
-                              type="radio"
-                              checked={index === rowIndex}
-                              onChange={() => { setRowIndex(index); if (scriptColumn) setScript(String(row[scriptColumn] ?? "")); }}
-                              aria-label={`选择第 ${index + 1} 行`}
-                            />
-                          </td>
-                          <td className="px-3 py-2 text-slate-700">{row[0] || `第 ${index + 1} 行`}</td>
-                          <td className="px-3 py-2 text-right text-slate-400">播放量 {columnOfMetric.plays ? (row[columnOfMetric.plays] || "—") : "—"}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            )}
-
-            {workbook.truncated && (
-              <p className="text-[11px] text-amber-600">文件行数较多，只显示了前 500 行。</p>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── 第三步：文案与元信息 ───────────────────────────────────────── */}
-      {workbook && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">第三步　补充文案与视频信息</CardTitle></CardHeader>
-          <CardContent className="space-y-3">
-            <div className="grid gap-3 sm:grid-cols-3">
-              <label className="block sm:col-span-2">
-                <span className="mb-1.5 block text-xs font-medium text-slate-600">视频标题</span>
-                <input
-                  value={videoTitle}
-                  onChange={event => setVideoTitle(event.target.value)}
-                  placeholder="留空则取 Excel 第一列"
-                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500"
-                />
-              </label>
-              <label className="block">
-                <span className="mb-1.5 block text-xs font-medium text-slate-600">视频链接（可选）</span>
-                <input
-                  value={videoLink}
-                  onChange={event => setVideoLink(event.target.value)}
-                  placeholder="https://…"
-                  className="h-10 w-full rounded-xl border border-slate-200 bg-white px-3 text-sm outline-none focus:border-blue-500"
-                />
-              </label>
-            </div>
-            <label className="block">
-              <span className="mb-1.5 block text-xs font-medium text-slate-600">视频文案</span>
-              <textarea
-                value={script}
-                onChange={event => setScript(event.target.value)}
-                rows={5}
-                placeholder="把这条视频的口播文案粘在这里（或在上一步选择文案列）。Agent 会用它在 8 个三秒类型、8 个标题类型、5 个结尾钩子类型里判断。"
-                className="w-full rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs leading-6 outline-none focus:border-blue-500"
-              />
-            </label>
-            <div className="flex items-center gap-3">
-              <Button type="button" onClick={runAnalysis} disabled={analyzing || !workbook}>
-                {analyzing ? <LoaderCircle className="mr-1.5 h-4 w-4 animate-spin" /> : <Sparkles className="mr-1.5 h-4 w-4" />}
-                {analyzing ? "正在分析…" : "开始分析"}
-              </Button>
-              <span className="text-[11px] text-slate-400">判定结论由后端按平台标准值实算，AI 只负责解释与给建议。</span>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* ── 报告 ──────────────────────────────────────────────────────── */}
-      {report && <ReviewReportView report={report} onSave={save} saving={saving} />}
-
-      {/* ── 历史 ──────────────────────────────────────────────────────── */}
-      {history.length > 0 && (
-        <Card>
-          <CardHeader><CardTitle className="text-base">这个客户的复盘记录</CardTitle></CardHeader>
-          <CardContent>
-            <ul className="divide-y divide-slate-100">
-              {history.map(item => (
-                <li key={item.id} className="flex items-center gap-3 py-2.5">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-sm text-slate-800">{item.videoTitle || "（无标题）"}</div>
-                    <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-400">
-                      <span>{item.platformLabel}</span>
-                      {item.playBucketLabel && <span>· {item.playBucketLabel}</span>}
-                      {item.categoryName && <span>· {item.categoryName}</span>}
-                      {item.optimizeCount > 0 && <span className="text-rose-500">· {item.optimizeCount} 项待优化</span>}
-                      <span>· {String(item.createdAt || "").slice(0, 10)}</span>
-                    </div>
-                  </div>
-                  <button type="button" onClick={() => removeHistory(item.id)} className="shrink-0 rounded-lg p-1.5 text-slate-400 transition hover:bg-rose-50 hover:text-rose-600" aria-label="删除这条复盘">
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </li>
-              ))}
-            </ul>
-          </CardContent>
-        </Card>
-      )}
-    </div>
-  );
-
-  if (embedded) return body;
-  return (
-    <main className="min-h-screen bg-[#f5f7fb] px-5 py-6 text-slate-900 sm:px-8 lg:px-10">
-      <div className="mx-auto max-w-[1200px]">
-        <h1 className="text-xl font-semibold tracking-tight text-slate-950">复盘分析 · 视频数据分析</h1>
-        <p className="mt-1 text-sm text-slate-500">上传一条视频的真实数据与文案，得到数据分析报告与优化建议。</p>
-        <div className="mt-6">{body}</div>
+    const saved = await saveVideoReview({ customerId, customerName: customers.find(c => c.id === customerId)?.name || '', report });
+    setHistory(await listVideoReviewsForCustomer(customerId)); setMessage(`已保存（${saved.videoTitle || '未命名视频'}）。`); onSaved?.();
+  });
+  const removeHistory = (id: string) => void run('删除报告…', async () => { await deleteVideoReview(id); setHistory(await listVideoReviewsForCustomer(customerId)); setMessage('已删除。'); });
+  const disabled = Boolean(busy || importing);
+  const body = <div className="space-y-5">
+    {error && <div role="alert" className="rounded-xl bg-rose-50 p-4 text-sm text-rose-700">{error}</div>}
+    {message && <div role="status" className="rounded-xl bg-emerald-50 p-4 text-sm text-emerald-700">{message}</div>}
+    <Card><CardHeader><CardTitle className="text-base">第一步　选择客户与数据填写方式</CardTitle></CardHeader><CardContent className="space-y-4">
+      <p className="text-xs leading-6 text-slate-500">分析自己账号已发布的视频，可直接填写平台后台数据，也可上传 Excel 导入。AI 识别后仍需核对；.xls 请另存为 .xlsx。</p>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <label className="text-xs text-slate-600">客户<select aria-label="单条复盘客户" value={customerId} disabled={disabled} onChange={e => { setCustomerId(e.target.value); updateRow(createReviewRow('single-video')); setError(''); }} className="mt-2 h-10 w-full rounded-lg border border-slate-200 px-3 text-sm"><option value="">请选择客户</option>{customers.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></label>
+        <label className="text-xs text-slate-600">平台<select aria-label="单条复盘平台" value={platform} disabled={disabled} onChange={e => { setPlatform(e.target.value as ReviewPlatform); updateRow({ ...row, metrics: {} }); setError(''); }} className="mt-2 h-10 w-full rounded-lg border border-slate-200 px-3 text-sm">{PLATFORMS.map(p => <option key={p.key} value={p.key}>{p.label}</option>)}</select></label>
       </div>
-    </main>
-  );
+      <div className="flex flex-wrap gap-2"><Button variant={source === 'manual' ? 'default' : 'outline'} disabled={disabled} onClick={() => setSource('manual')}>直接填写</Button><Button variant={source === 'excel' ? 'default' : 'outline'} disabled={disabled} onClick={() => setSource('excel')}>Excel 导入</Button></div>
+      <div hidden={source !== 'excel'}><ReviewWorkbookImport key={`${customerId}:${platform}`} platform={platform} mode="single" options={options} disabled={Boolean(busy)} onBusyChange={setImporting} onImport={rows => updateRow(rows[0])} /></div>
+    </CardContent></Card>
+    <Card><CardHeader><CardTitle className="text-base">第二步　填写并核对视频数据</CardTitle></CardHeader><CardContent className="space-y-4">
+      <ReviewVideoFields row={row} onChange={updateRow} options={options} dictionary={dictionary} disabled={disabled} />
+      <div className="flex flex-wrap items-center gap-3"><Button onClick={runAnalysis} disabled={disabled || !options || !customerId}>{busy || '开始分析'}</Button><span className="text-xs text-slate-400">数据判定按平台标准值计算，AI 结合真实文案解释和提出建议。</span></div>
+    </CardContent></Card>
+    {report && <ReviewReportView report={report} onSave={save} saving={disabled} />}
+    {history.length > 0 && <Card><CardHeader><CardTitle className="text-base">这个客户的复盘记录</CardTitle></CardHeader><CardContent><ul className="divide-y divide-slate-100">{history.map(item => <li key={item.id} className="flex items-center gap-3 py-3"><div className="min-w-0 flex-1"><p className="truncate text-sm">{item.videoTitle || '未命名视频'}</p><p className="mt-1 text-xs text-slate-400">{item.platformLabel} · {item.categoryName} · {String(item.createdAt).slice(0, 10)}{item.optimizeCount > 0 ? ` · ${item.optimizeCount} 项待优化` : ''}</p></div><button disabled={disabled} onClick={() => removeHistory(item.id)} aria-label="删除这条复盘" className="rounded-lg p-2 text-slate-400 hover:text-rose-600"><Trash2 className="h-4 w-4" /></button></li>)}</ul></CardContent></Card>}
+  </div>;
+  if (embedded) return body;
+  return <main className="min-h-screen bg-[#f5f7fb] px-5 py-6 text-slate-900 sm:px-8 lg:px-10"><div className="mx-auto max-w-[1200px]"><h1 className="text-xl font-semibold">复盘分析 · 视频数据分析</h1><p className="mt-1 text-sm text-slate-500">填写或导入一条视频的真实数据与文案，得到分析报告与优化建议。</p><div className="mt-6">{body}</div></div></main>;
 }
 
 /** 报告视图：判定表 + 四大结构 + 建议。抽出来是为了让主流程读起来还是「三步」。 */

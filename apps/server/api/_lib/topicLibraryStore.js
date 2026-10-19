@@ -22,6 +22,12 @@ import { getEndingHookReport, listEndingHookReports } from "./endingHookStore.js
 
 let clientPromise;
 let indexPromise;
+export async function closeMongoClient() {
+  const current = clientPromise;
+  clientPromise = undefined;
+  indexPromise = undefined;
+  if (current) await (await current).close();
+}
 
 // 建索引是尽力而为：失败不影响读写主流程，只是查询退化成全表扫描。
 const ensureIndexes = collection => {

@@ -7,6 +7,8 @@ import { Badge } from "./components/ui/badge";
 import { ArrowLeft } from "lucide-react";
 import { apiUrl, fetchWithRetry, parseApiJson } from "./api";
 import { useAuth } from "./auth.tsx";
+import { getActiveReviewMemory, type ReviewMemory } from "./weeklyReviewApi";
+import { selectTopicsByWeeklyPlan } from "./weeklyTopicSelection";
 import { loadLibraryForCustomer, runTopicContentAnalysis, type TopicAnalysis } from "./topicContentAnalysis";
 import { buildTopicAnalysisScopeKey, canReuseTopicAnalysis, decideTopicAnalysisAction } from "./topicAnalysisPipeline";
 import { useStageDraft } from "./stageDraft";
@@ -708,6 +710,9 @@ export default function App() {
   const qualifiedTopics = useMemo(() => filterByLikes(tikhubTopics, minLikes), [tikhubTopics, minLikes]);
   // 脚本与标签是异步补上的；挂到 topic 上之后，列表渲染与 handleSubmit 共用同一份数据。
   const topicsWithContent = useMemo(() => attachContent(qualifiedTopics, topicContent), [qualifiedTopics, topicContent]);
+  const [reviewMemory, setReviewMemory] = useState<ReviewMemory | null>(null);
+  const [reviewSelectionMessage, setReviewSelectionMessage] = useState('');
+  const [reviewMemoryError, setReviewMemoryError] = useState('');
 
   const topicGroups = useMemo(
     () => groupTopicsByWeek(topicsWithContent, topicDays),
@@ -1432,6 +1437,16 @@ export default function App() {
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- 唯一依赖就是范围指纹，其余值走 ref（见上方注释）
   }, [topicAnalysisScopeKey]);
+  useEffect(() => {
+    let cancelled = false;
+    setReviewMemory(null); setReviewSelectionMessage(''); setReviewMemoryError('');
+    const customerId = String(activeTask?.customerId || '');
+    if (customerId && ['douyin', 'wechat_channels'].includes(sourcePlatform)) {
+      getActiveReviewMemory(customerId, sourcePlatform).then(memory => { if (!cancelled) setReviewMemory(memory); })
+        .catch(error => { if (!cancelled) setReviewMemoryError(`复盘配比读取失败：${error.message}`); });
+    }
+    return () => { cancelled = true; };
+  }, [activeTask?.customerId, sourcePlatform]);
 
   /**
    * 预热选题库词典：**一进入选题页就发请求**，不等视频抓完。
@@ -2090,6 +2105,22 @@ export default function App() {
                 )}
 
                 <div className="mt-4 flex flex-wrap items-center gap-2">
+                  {reviewMemory && <div className="flex w-full flex-wrap items-center gap-3 rounded-xl bg-blue-50 p-3 text-xs text-blue-800">
+                    <span>已确认的复盘配比 · {reviewMemory.period.start}～{reviewMemory.period.end} · 计划 {reviewMemory.nextWeekCount} 条</span>
+                    <Button size="sm" variant="outline" disabled={!topicsWithContent.some(topic => topic.content?.categoryName)} onClick={() => {
+                      const selection = selectTopicsByWeeklyPlan(topicsWithContent, reviewMemory.plan);
+                      setSelectedTopics(selection.ids);
+                      setReviewSelectionMessage(`已勾选 ${selection.ids.length} 条。${selection.shortages.length ? selection.shortages.join('；') : '各类配额已满足。'}`);
+                    }}>按复盘配比勾选</Button>
+                    {(reviewMemory.notes || reviewMemory.experience?.summary || reviewMemory.experience?.actions?.length > 0) && <details className="w-full">
+                      <summary className="cursor-pointer">查看经理确认的复盘经验</summary>
+                      {reviewMemory.notes && <p className="mt-2 whitespace-pre-wrap">{reviewMemory.notes}</p>}
+                      {reviewMemory.experience?.summary && <p className="mt-2">{reviewMemory.experience.summary}</p>}
+                      {reviewMemory.experience?.actions?.map((action, index) => <p key={index} className="mt-1">· {action}</p>)}
+                    </details>}
+                    {reviewSelectionMessage && <p className="w-full">{reviewSelectionMessage}</p>}
+                  </div>}
+                  {reviewMemoryError && <p className="w-full text-xs text-amber-700">{reviewMemoryError}</p>}
                   <span className="text-xs text-slate-500">排序依据</span>
                   <div className="flex flex-wrap gap-2">
                     {[

@@ -259,6 +259,8 @@ export const formatAdaptationForPrompt = adaptation => {
     `【配比来源】${
       adaptation.source === ADAPTATION_SOURCE.category
         ? "该大类的历史适配配比（来自选题库）"
+        : adaptation.source === 'review_memory'
+          ? '该大类由项目经理确认的周度复盘配比（优先于对标账号统计）'
         : "全库通用配比（该大类没有配比记录，属于降级口径）"
     }`,
     "【本大类的类型配比（后端实算，不要改动）】",
@@ -266,5 +268,15 @@ export const formatAdaptationForPrompt = adaptation => {
     `【必须生成的 ${adaptation.slots.length} 条，逐条指定类型（顺序不要调换）】`,
     ...adaptation.slots.map(slot => `第 ${slot.index} 条 → ${slot.typeLabel}（${slot.type}）`),
   ];
+  if (adaptation.source === 'review_memory' && adaptation.reviewExperience) {
+    const experience = adaptation.reviewExperience;
+    const notes = cleanText(experience.notes, 2000);
+    const summary = cleanText(experience.summary, 3000);
+    const actions = (Array.isArray(experience.actions) ? experience.actions : []).map(a => cleanText(a, 1000)).filter(Boolean).slice(0, 12);
+    if (notes || summary || actions.length) lines.push(
+      '【经理确认的账号复盘经验】作为文案优化参考；遵守上面的候选条数与类型，用本条内容的事实落实建议。',
+      JSON.stringify({ notes, summary, actions }),
+    );
+  }
   return lines.join("\n");
 };

@@ -29,6 +29,8 @@ import os from "node:os";
 import path from "node:path";
 import bcrypt from "bcryptjs";
 import { MongoClient } from "mongodb";
+import { weeklyInput, weeklyDictionary } from '../tests/helpers/weekly-fixture.mjs';
+import { buildLibraryAccount } from '../api/_lib/topicLibraryStore.js';
 
 // ⚠️ 临时库名**每次运行都不同**，不要写死。
 //
@@ -515,6 +517,19 @@ try {
   const xlsRes = await post("/api/review/workbook", { fileName: "旧格式.xls", dataBase64: Buffer.from("x").toString("base64") });
   check(xlsRes.status === 400 && /另存为/.test(String(xlsRes.json?.error || "")),
     `  ★ .xls 给出「另存为 .xlsx」的提示（实际 ${xlsRes.status}：${xlsRes.json?.error || ""}）`);
+
+  const fieldsAnon = await fetch(`${BASE}/api/review/workbook-recognition?platform=douyin`);
+  check(fieldsAnon.status === 401, '复盘表单字段未登录 → 401');
+  const dyFields = await (await fetch(`${BASE}/api/review/workbook-recognition?platform=douyin`, { headers: { Cookie: cookie } })).json();
+  check(dyFields.metricOptions?.some(m => m.key === 'plays') && dyFields.structures?.length === 3, '表单字段来自后端指标与标签定义');
+  const wxFields = await (await fetch(`${BASE}/api/review/workbook-recognition?platform=wechat_channels`, { headers: { Cookie: cookie } })).json();
+  check(wxFields.metricOptions?.some(m => m.key === 'play3sRate') && !wxFields.metricOptions?.some(m => m.key === 'bounce2sRate'), '表单字段按平台区分');
+  const recognitionInvalid = await post('/api/review/workbook-recognition', { platform: 'unknown' });
+  check(recognitionInvalid.status === 400, 'AI 表格识别拒绝无效平台');
+  const recognitionXls = await post('/api/review/workbook-recognition', { platform: 'douyin', fileName: '旧表.xls', dataBase64: 'eA==' });
+  check(recognitionXls.status === 400 && /另存为/.test(recognitionXls.json?.error), 'AI 表格识别保留旧格式提示');
+  const recognitionOffline = await post('/api/review/workbook-recognition', { platform: 'douyin', mode: 'single', fileName: '视频.xlsx', dataBase64: buildReviewXlsx().toString('base64') });
+  check(recognitionOffline.status === 503 && /填写|导入/.test(recognitionOffline.json?.error), 'AI 表格识别失败明确返回人工填写路径');
 
   // ── 6. 员工「临时分析」：不关联客户的第二入口 + **员工私有**隔离 ──────────────
   //
@@ -1833,6 +1848,68 @@ try {
   });
   check(refineNoKey.status === 501,
     `★ 改图缺密钥 → 501（实际 ${refineNoKey.status}；200 意味着真的花钱出图了）`);
+
+  // 4.2 weekly review: real HTTP and temp Mongo, fake AI config from this script.
+  const weeklyCustomer = await db.collection('customers').insertOne({ name: '周报专用冒烟客户', notes: SEED_TAG });
+  const weeklyCustomerId = String(weeklyCustomer.insertedId);
+  const weeklyManager = await db.collection('users').findOne({ name: '冒烟验证' });
+  const weeklyLibraryAccount = buildLibraryAccount({ report: { accountName: '对标测试', accountUrl: 'https://www.douyin.com/user/weekly-test',
+    categories: weeklyDictionary.map((c, i) => ({ id: `c${i}`, name: c.name, subcategories: c.subcategories.map((s, j) => ({ id: `s${i}${j}`, name: s.name })) })) } });
+  await db.collection('topic_libraries').insertOne({ managerId: weeklyManager._id, customerId: weeklyCustomerId, customerName: '周报专用冒烟客户', accounts: [weeklyLibraryAccount] });
+  const weeklyPayload = { ...weeklyInput(), customerId: weeklyCustomerId, fillTags: false };
+  const weeklyAnon = await fetch(`${BASE}/api/review/weekly`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weeklyPayload) });
+  check(weeklyAnon.status === 401, '4.2 未登录分析 → 401');
+  const weeklyEmployee = await empPost('/api/review/weekly', weeklyPayload, employeeA);
+  check(weeklyEmployee.status === 403, '4.2 员工不可发起周度分析 → 403');
+  const employeeReviewFields = await fetch(`${BASE}/api/review/workbook-recognition?platform=douyin`, { headers: { Cookie: employeeA.cookie } });
+  check(employeeReviewFields.status === 200, '4.1 员工可读表单字段 → 200');
+  const employeeRecognitionInvalid = await empPost('/api/review/workbook-recognition', { platform: 'unknown' }, employeeA);
+  check(employeeRecognitionInvalid.status === 400, '4.1 员工可用 Excel 识别入口，保留入参校验');
+  const weeklyBad = await post('/api/review/weekly', { ...weeklyPayload, period: { start: '2026-10-01', end: '2026-10-09' } });
+  check(weeklyBad.status === 400, '4.2 非七天周期 → 400');
+  const weekly = await post('/api/review/weekly', weeklyPayload);
+  check(weekly.status === 200 && weekly.json?.report?.analysisSource === 'heuristic', '4.2 AI 失败仍返回规则周报', weekly.json?.error);
+  const weeklyReport = weekly.json?.report;
+  check(weeklyReport?.summary?.totals?.plays?.value === 27900, '4.2 播放总量由后端实算');
+  check(weeklyReport?.absolute?.boundary?.length === 1, '4.2 =1000 单列边界');
+  check(weeklyReport?.plan?.topics?.reduce((s, c) => s + c.ratio, 0) === 100, '4.2 大类配比合计100');
+  const weeklySave = await post('/api/weekly-analysis-reports', { customerId: weeklyCustomerId, report: weeklyReport });
+  const weeklyId = weeklySave.json?.item?.id;
+  check(weeklySave.status === 201 && weeklyId, '4.2 保存周报 → 201', weeklySave.json?.error);
+  const weeklySaveAgain = await post('/api/weekly-analysis-reports', { customerId: weeklyCustomerId, report: weeklyReport });
+  check(weeklySaveAgain.json?.item?.id === weeklyId, '4.2 重复保存幂等');
+  const weeklyGet = await fetch(`${BASE}/api/weekly-analysis-reports?id=${weeklyId}`, { headers: { Cookie: cookie } });
+  const weeklyFull = await weeklyGet.json();
+  check(weeklyFull.item?.report?.videos?.length === 6, '4.2 读回完整周报');
+  const weeklyList = await fetch(`${BASE}/api/weekly-analysis-reports?customerId=${weeklyCustomerId}`, { headers: { Cookie: cookie } });
+  const weeklyItems = await weeklyList.json();
+  check(weeklyItems.items?.length === 1 && !('report' in weeklyItems.items[0]), '4.2 列表只给元数据');
+  const weeklyEmpRead = await empGet(`/api/weekly-analysis-reports?id=${weeklyId}`, employeeA);
+  check(weeklyEmpRead.status === 403, '4.2 员工不可读周报正文 → 403');
+  const memoryUrl = `/api/review-memory?customerId=${weeklyCustomerId}&platform=douyin&view=active`;
+  const beforeConfirm = await empGet(memoryUrl, employeeA);
+  check(beforeConfirm.status === 200 && beforeConfirm.json?.item === null, '4.2 保存周报没有自动激活记忆');
+  const previewPlan = await post('/api/review-memory', { action: 'preview', reportId: weeklyId, plan: weeklyFull.item?.report?.plan });
+  check(previewPlan.status === 200 && previewPlan.json?.plan?.topics?.reduce((s, c) => s + c.count, 0) === 10, '4.2 后端预览条数合计10');
+  const confirmBody = { reportId: weeklyId, plan: previewPlan.json?.plan, notes: '冒烟经验', requestId: 'weekly-smoke-confirmation-0001' };
+  const employeeConfirm = await empPost('/api/review-memory', confirmBody, employeeA);
+  check(employeeConfirm.status === 403, '4.2 员工不可确认配比 → 403');
+  const memoryConfirm = await post('/api/review-memory', confirmBody);
+  check(memoryConfirm.status === 201 && memoryConfirm.json?.active?.id, '4.2 经理确认后记忆生效', memoryConfirm.json?.error);
+  const memoryAgain = await post('/api/review-memory', confirmBody);
+  check(memoryAgain.json?.version?.id === memoryConfirm.json?.version?.id, '4.2 重复确认幂等');
+  const activeMemory = await empGet(memoryUrl, employeeA);
+  check(activeMemory.json?.item?.plan?.topics?.length === 2 && !('managerId' in activeMemory.json.item), '4.2 员工只读客户确认配比，无属主字段');
+  const otherPlatformMemory = await empGet(`/api/review-memory?customerId=${weeklyCustomerId}&platform=wechat_channels&view=active`, employeeA);
+  check(otherPlatformMemory.json?.item === null, '4.2 确认配比按平台隔离');
+  const stopMemory = await fetch(`${BASE}/api/review-memory?customerId=${weeklyCustomerId}&platform=douyin&id=${memoryConfirm.json?.version?.id}`, { method: 'DELETE', headers: { Cookie: cookie } });
+  check(stopMemory.status === 200, '4.2 经理可停用生效记忆');
+  const memoryStopped = await empGet(memoryUrl, employeeA);
+  check(memoryStopped.json?.item === null, '4.2 停用后生成回退基准库');
+  const weeklyDelete = await fetch(`${BASE}/api/weekly-analysis-reports?id=${weeklyId}`, { method: 'DELETE', headers: { Cookie: cookie } });
+  check(weeklyDelete.status === 200, '4.2 删除自己的周报');
+  const weeklyGone = await fetch(`${BASE}/api/weekly-analysis-reports?id=${weeklyId}`, { headers: { Cookie: cookie } });
+  check(weeklyGone.status === 404, '4.2 删除后正文404');
 
   // ⑧ 清理：删任务 → 删员工 → 删客户（顺带验证删除链是通的）
   for (const id of [mgTaskId, ...(mgTaskBatch.json || []).map(item => String(item._id))]) {

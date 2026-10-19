@@ -44,11 +44,11 @@ const badRequest = message => Object.assign(new Error(message), { status: 400 })
  *    「这个数字代表什么」的含义、以及哪个可缺，全部只在 `reviewMetrics.js` 里定义一次。
  *    前端多存一份必然漂移 —— 到时候界面能选「2s跳出率」而视频号根本没有这个指标。
  */
-const buildMetricOptions = platform => {
+export const buildMetricOptions = platform => {
   const available = new Set(metricsForPlatform(platform).map(metric => metric.key));
   const pick = (catalog, group) => catalog
     .filter(metric => available.has(metric.key))
-    .map(metric => ({ key: metric.key, label: metric.label, meaning: metric.meaning, optional: Boolean(metric.optional), group }));
+    .map(metric => ({ key: metric.key, label: metric.label, meaning: metric.meaning, optional: Boolean(metric.optional), kind: metric.kind || 'count', group }));
   return [...pick(ENGAGEMENT_METRIC_CATALOG, "engagement"), ...pick(PROFESSIONAL_METRIC_CATALOG, "professional")];
 };
 

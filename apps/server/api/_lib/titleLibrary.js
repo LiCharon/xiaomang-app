@@ -115,6 +115,7 @@ export const formatTitleCandidatesAsText = (candidates, originalType = null) => 
 export const describeTitleAdaptation = adaptation => {
   if (!adaptation) return "";
   const count = Array.isArray(adaptation.slots) ? adaptation.slots.length : 0;
+  if (adaptation.source === 'review_memory') return adaptation.note;
   if (adaptation.source === "category") {
     return `标题库已按大类「${adaptation.categoryName}」的配比分配 ${count} 条标题。`;
   }

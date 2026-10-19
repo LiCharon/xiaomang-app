@@ -43,6 +43,7 @@ export type ReviewMetricOption = {
   meaning: string;
   optional: boolean;
   group: "engagement" | "professional";
+  kind?: 'count' | 'rate' | 'seconds';
 };
 
 export type ParsedWorkbook = {

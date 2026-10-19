@@ -38,7 +38,9 @@ import { deleteTopicLibrary, getTopicCategoryDictionary, getTopicCategoryDiction
 import { appendTopicRefreshItems, deleteTopicRefreshSession, dictionaryFingerprint, getTopicRefreshSession, saveTopicRefreshCandidates } from "../api/_lib/topicRefreshSessionStore.js";
 import { PUBLISH_PHASES, runPublishPhase } from "../api/_lib/publishAgentRunner.js";
 import { runVideoAnalysis } from "../api/_lib/reviewAgentRunner.js";
+import { handleWeeklyRequest } from "../api/_lib/weeklyRoutes.js";
 import { parseWorkbookPayload } from "../api/_lib/reviewWorkbook.js";
+import { getReviewInputOptions, recognizeReviewWorkbook } from "../api/_lib/reviewWorkbookRecognition.js";
 import { deleteVideoAnalysisReport, getVideoAnalysisReport, getVideoAnalysisReportForCustomer, listVideoAnalysisReports, listVideoAnalysisReportsForCustomer, saveVideoAnalysisReport } from "../api/_lib/videoAnalysisStore.js";
 import { clearPublishSelections, deleteAccountTags, deleteCoverBase, deletePublishSelection, getAccountTags, getCoverBase, listPublishSelections, saveAccountTags, saveCoverBase, savePublishSelection } from "../api/_lib/publishWarehouseStore.js";
 import { COVER_TIERS } from "../api/_lib/publishWarehouse.js";
@@ -115,7 +117,11 @@ createRequestLogger("server", "startup").info("server.config", {
   agentWorkflowId: startupAgentConfig.mainWorkflowId,
   tikhubBaseUrl: baseUrl,
   transcriptProviders: startupAgentConfig.transcriptProviders.join(","),
+  goldTranscriptProviders: startupAgentConfig.goldTranscriptProviders.join(","),
   doubaoResourceId: startupAgentConfig.doubaoResourceId,
+  doubaoFileAsrResourceId: startupAgentConfig.doubaoFileAsrResourceId,
+  doubaoStreamAsrResourceId: startupAgentConfig.doubaoStreamAsrResourceId,
+  doubaoStreamAsrUrl: startupAgentConfig.doubaoStreamAsrUrl,
   tikhubConfigured: Boolean(startupAgentConfig.tikhubApiToken),
   deepseekConfigured: Boolean(startupAgentConfig.deepseekApiKey),
   doubaoAsrConfigured: Boolean(startupAgentConfig.doubaoApiKey || (startupAgentConfig.doubaoAppKey && startupAgentConfig.doubaoAccessKey)),
@@ -142,6 +148,7 @@ app.use("/api/agent/publish", jsonWithImages);
 // 同样只给这一条放宽；解码后的文件大小在 `_lib/reviewWorkbook.js` 里另卡 5MB。
 const REVIEW_JSON_LIMIT = "8mb";
 app.use("/api/review", express.json({ limit: REVIEW_JSON_LIMIT }));
+app.use("/api/weekly-analysis-reports", express.json({ limit: REVIEW_JSON_LIMIT }));
 
 app.use(express.json({ limit: "1mb" }));
 
@@ -1151,6 +1158,14 @@ app.post("/api/review/workbook", async (req, res) => {
   }
 });
 
+app.all('/api/review/workbook-recognition', async (req, res) => {
+  try {
+    if (req.method === 'GET') return res.json({ success: true, ...getReviewInputOptions(req.query.platform) });
+    if (req.method !== 'POST') return res.status(405).json({ success: false, error: 'Method not allowed' });
+    return res.json({ success: true, ...await recognizeReviewWorkbook({ body: req.body }) });
+  } catch (error) { return res.status(error.status || 500).json({ success: false, error: error.message || '表格识别失败' }); }
+});
+
 app.post("/api/agent/video-analysis", async (req, res) => {
   if (!req.authUser) {
     return res.status(401).json({ success: false, error: "请先登录" });
@@ -1244,6 +1259,13 @@ app.delete("/api/video-analysis-reports", async (req, res) => {
     });
   }
 });
+
+for (const [route, resource] of [["/api/review/weekly", "analysis"], ["/api/weekly-analysis-reports", "reports"], ["/api/review-memory", "memory"]]) {
+  app.all(route, async (req, res) => {
+    const result = await handleWeeklyRequest({ method: req.method, user: req.authUser, body: req.body, query: req.query, resource });
+    return res.status(result.status).json(result.payload);
+  });
+}
 
 // ── 模块 3　正式选题库（客户级，每客户一份，可纳入多个对标账号）─────────────
 // 与 Vercel 版 api/topic-libraries/index.ts 保持同构（§6.2⑤：两套后端必须同步改）。

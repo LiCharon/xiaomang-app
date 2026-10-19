@@ -23,6 +23,7 @@ import { BenchmarkProfileStage } from "./BenchmarkProfileStage";
 import { AccountPlanStage } from "./AccountPlanStage";
 import { TopicLibraryStage } from "./TopicLibraryStage";
 import { VideoAnalysisStage } from "./VideoAnalysisStage";
+import { WeeklyAnalysisStage } from "./WeeklyAnalysisStage";
 import type { SavedBenchmarkReport } from "./benchmarkAnalysis";
 import { useStageDraft } from "./stageDraft";
 import {
@@ -224,6 +225,9 @@ export default function AccountPositioningPage() {
       // 它分析的是**客户自己发布的视频**，数据由人工上传 Excel —— 不抓取、不转写。
       if (activeStep.id === "video-review" && activeStep.available) {
         return <VideoAnalysisStage embedded onSaved={() => markCompleted("video-review")} />;
+      }
+      if (activeStep.id === "account-review" && activeStep.available) {
+        return <WeeklyAnalysisStage embedded onSaved={() => markCompleted("account-review")} />;
       }
       return (
         <NotImplementedPanel

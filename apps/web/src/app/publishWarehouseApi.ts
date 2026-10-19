@@ -176,11 +176,12 @@ export type CoverBase = {
 
 export type TitleMetric = { title: string; fontSizePx: number; lines: number; shrunk: boolean };
 
-const post = async <T,>(path: string, body: unknown): Promise<T> => {
+const post = async <T,>(path: string, body: unknown, options: { retries?: number } = {}): Promise<T> => {
   const response = await fetchWithRetry(apiUrl(path), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
+    ...options,
   });
   const data = await parseApiError(response);
   return data as T;
@@ -295,7 +296,7 @@ export const savePublishSelection = async (payload: {
   publishCopy?: unknown;
   topicTags?: unknown;
 }): Promise<PublishSelection> => {
-  const data = await post<{ item: PublishSelection }>("/api/publish-warehouse", payload);
+  const data = await post<{ item: PublishSelection }>("/api/publish-warehouse", payload, { retries: 0 });
   return data.item;
 };
 

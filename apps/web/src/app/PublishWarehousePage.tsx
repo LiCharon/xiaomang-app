@@ -1,15 +1,16 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { Check, Upload, X } from "lucide-react";
 import { Button } from "./components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./components/ui/card";
 import { apiUrl, fetchWithRetry } from "./api";
+import { useAuth } from "./auth";
+import { PublishSelectionDrafts, type PublishSelectionPatch } from "./publishSelectionDraft";
 import { parseApiError } from "./reportApi";
-import { clearCachedFinalDrafts, readCachedFinalDrafts } from "./finalDraftCache";
+import { readCachedFinalDrafts } from "./finalDraftCache";
 import {
   ACCOUNT_TAG_ANGLES,
   analyzeBenchmarkCover,
-  clearPublishSelections,
   deleteCoverBase,
   generateCoverImage,
   getCoverBase,
@@ -66,6 +67,11 @@ const TABS = [
 ] as const;
 
 type TabId = (typeof TABS)[number]["id"];
+
+const getSessionStorage = () => {
+  try { return typeof sessionStorage === "undefined" ? undefined : sessionStorage; }
+  catch { return undefined; }
+};
 
 const loadJson = <T,>(key: string, fallback: T): T => {
   try {
@@ -315,6 +321,8 @@ function UploadDropzone({ label, hint, image, onPick }: {
 
 export default function PublishWarehousePage() {
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const userId = String(user?.id || user?._id || "");
 
   const selectedTopics = useMemo(() => loadJson<TopicLike[]>("selectedTopics", []), []);
   const contentTasks = useMemo(() => loadJson<any[]>("contentTasks", []), []);
@@ -323,15 +331,43 @@ export default function PublishWarehousePage() {
     () => loadJson<Array<{ id: string; shareLink: string; result: any }>>("contentWorkflowGroups", []),
     [],
   );
-  const customerId = useMemo(() => String(sessionStorage.getItem("contentCustomerId") || "").trim(), []);
+  const customerId = useMemo(() => {
+    try { return String(getSessionStorage()?.getItem("contentCustomerId") || "").trim(); }
+    catch { return ""; }
+  }, []);
 
   const [activeTab, setActiveTab] = useState<TabId>("cover");
   const [activeTopicIndex, setActiveTopicIndex] = useState(0);
 
+  // Old queues must not send pending writes with a different login's cookie.
+  const saveScope = useRef({ userId, customerId, active: false });
+  saveScope.current.userId = userId;
+  saveScope.current.customerId = customerId;
+  useEffect(() => {
+    saveScope.current.active = true;
+    return () => { saveScope.current.active = false; };
+  }, [userId, customerId]);
+
   // 每条的发布仓选择（按 topicId 存）。
   const [selections, setSelections] = useState<Record<string, PublishSelection>>({});
   const [loadingSelections, setLoadingSelections] = useState(false);
-  const [savingTopicId, setSavingTopicId] = useState("");
+  const selectionDrafts = useMemo(() => new PublishSelectionDrafts(
+    { userId, customerId },
+    selectedTopics.map(topic => ({ id: String(topic.id || ""), title: String(topic.title || "") })),
+    getSessionStorage(),
+    (topicId, title, patch) => {
+      const scope = saveScope.current;
+      if (!scope.active || scope.userId !== userId || scope.customerId !== customerId) {
+        return Promise.reject(new Error("登录用户或页面已切换，未保存的选择已留在原用户缓存中"));
+      }
+      return savePublishSelection({ customerId, topicId, title, ...patch });
+    },
+  ), [userId, customerId, selectedTopics]);
+  const [saveStatus, setSaveStatus] = useState(() => selectionDrafts.snapshot());
+  useEffect(() => selectionDrafts.subscribe(snapshot => {
+    setSelections(snapshot.selections);
+    setSaveStatus(snapshot);
+  }), [selectionDrafts]);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
@@ -437,20 +473,20 @@ export default function PublishWarehousePage() {
 
   // ── 载入已保存的发布仓（换批选题后恢复上次的勾选）─────────────────────────
   useEffect(() => {
-    if (!customerId) return;
+    if (!customerId || !userId) return;
     let active = true;
     setLoadingSelections(true);
     listPublishSelections(customerId)
       .then(items => {
         if (!active) return;
-        const map: Record<string, PublishSelection> = {};
-        for (const item of items) map[item.topicId] = item;
-        setSelections(map);
+        selectionDrafts.hydrate(items);
       })
-      .catch(() => { /* 首次使用没有记录，静默 */ })
+      .catch(() => {
+        if (active) setError("读取发布仓进度失败，已保留本地选择，请刷新重试");
+      })
       .finally(() => { if (active) setLoadingSelections(false); });
     return () => { active = false; };
-  }, [customerId]);
+  }, [customerId, userId, selectionDrafts]);
 
   // 载入账号标签库（账号恒定，确认过一次就一直复用）。
   useEffect(() => {
@@ -722,23 +758,15 @@ export default function PublishWarehousePage() {
     }
   };
 
-  const persist = useCallback(async (topicId: string, patch: Partial<PublishSelection>) => {
-    if (!customerId || !topicId) return;
-    setSavingTopicId(topicId);
-    try {
-      const saved = await savePublishSelection({
-        customerId,
-        topicId,
-        title: String(selectedTopics.find(item => String(item.id) === topicId)?.title || ""),
-        ...patch,
-      });
-      setSelections(prev => ({ ...prev, [topicId]: saved }));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "发布仓保存失败");
-    } finally {
-      setSavingTopicId("");
-    }
-  }, [customerId, selectedTopics]);
+  const persist = useCallback((
+    topicId: string,
+    patch: PublishSelectionPatch | ((current: PublishSelection) => PublishSelectionPatch),
+  ) => selectionDrafts.update(topicId, patch), [selectionDrafts]);
+
+  // Checkbox handlers deliberately leave failures in the persistent save notice.
+  const selectImmediately = (topicId: string, patch: PublishSelectionPatch | ((current: PublishSelection) => PublishSelectionPatch)) => {
+    void persist(topicId, patch).catch(() => { /* Draft and retry notice remain visible. */ });
+  };
 
   // ── 3.1 封面 ──────────────────────────────────────────────────────────────
   const loadCoverPlan = async (topic: TopicLike | null) => {
@@ -826,8 +854,6 @@ export default function PublishWarehousePage() {
       ];
       await persist(topicId, {
         cover: { selectedId: candidates[candidates.length - 1].id, candidates, titleStyle },
-        publishCopy: baseSelection?.publishCopy || null,
-        topicTags: baseSelection?.topicTags || null,
       });
       setMessage(`已生成封面「${title}」`);
     } catch (requestError) {
@@ -950,9 +976,7 @@ export default function PublishWarehousePage() {
       });
       setCopyResult(result.publishCopy);
       await persist(activeTopicId, {
-        cover: activeSelection?.cover || null,
-        publishCopy: { items: result.publishCopy.items, selected: activeSelection?.publishCopy?.selected || [] },
-        topicTags: activeSelection?.topicTags || null,
+        publishCopy: { items: result.publishCopy.items, selected: selectionDrafts.get(activeTopicId)?.publishCopy?.selected || [] },
       });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "发布文案生成失败");
@@ -1032,8 +1056,6 @@ export default function PublishWarehousePage() {
       });
       setTopicTags(result.topicTags);
       await persist(activeTopicId, {
-        cover: activeSelection?.cover || null,
-        publishCopy: activeSelection?.publishCopy || null,
         topicTags: { groups: result.topicTags.groups, selected: result.topicTags.tags, missing: result.topicTags.missing },
       });
     } catch (requestError) {
@@ -1060,6 +1082,7 @@ export default function PublishWarehousePage() {
     setExporting(format);
     setError("");
     try {
+      await selectionDrafts.flush();
       const items = await readPendingDraftItems();
       if (items.length === 0) throw new Error("暂无可导出的已保存文案，请先在最终文案编辑页保存");
       if (format === "feishu") {
@@ -1121,24 +1144,33 @@ export default function PublishWarehousePage() {
    * 标签口径与后端 `buildPublishBundle` 一致：账号恒定标签 + 选题标签，统一补 `#`。
    */
   const buildPublishPayload = () => {
-    const url = String(selectedCover?.image?.url || "").trim();
-    const dataUrl = String(selectedCover?.image?.dataUrl || "").trim();
-    const copyList = (activeSelection?.publishCopy?.selected || [])
+    const current = selectionDrafts.get(activeTopicId);
+    const cover = current?.cover.candidates.find(item => item.id === current.cover.selectedId);
+    const url = String(cover?.image?.url || "").trim();
+    const dataUrl = String(cover?.image?.dataUrl || "").trim();
+    const copyList = (current?.publishCopy?.selected || [])
       .map(item => String(item || "").trim()).filter(Boolean);
-    const tagList = [...Object.values(accountConfirmed), ...tagSelected]
+    const tagList = [...Object.values(accountConfirmed), ...(current?.topicTags.selected || [])]
       .map(item => String(item || "").trim()).filter(Boolean)
       .map(item => (item.startsWith("#") ? item : `#${item}`));
     return {
       coverUrl: /^https?:\/\//i.test(url) ? url : "",
-      coverTitle: String(selectedCover?.title || ""),
-      coverPrompt: String(selectedCover?.prompt || ""),
+      coverTitle: String(cover?.title || ""),
+      coverPrompt: String(cover?.prompt || ""),
       coverInline: !/^https?:\/\//i.test(url) && Boolean(dataUrl),
       copy: copyList.join("\n"),
       tags: Array.from(new Set(tagList)).join(" "),
     };
   };
 
-  const goToFinalEditor = () => {
+  const goToFinalEditor = async () => {
+    setError("");
+    try {
+      await selectionDrafts.flush();
+    } catch (requestError) {
+      setError(`选择尚未保存，暂不能进入最终编辑：${requestError instanceof Error ? requestError.message : "请重试保存"}`);
+      return;
+    }
     // 把本条的发布产出带给最终编辑页（那一页只读 `finalDraftPayload`，
     // 并把它作为可编辑段落并入最终草稿，之后导出飞书文档与多维表格都带着它）。
     const existing = loadJson<any>("finalDraftPayload", null);
@@ -1156,6 +1188,12 @@ export default function PublishWarehousePage() {
   };
 
   const confirmComplete = async () => {
+    try {
+      await selectionDrafts.flush();
+    } catch (requestError) {
+      setError(`选择尚未保存，暂不能结束任务：${requestError instanceof Error ? requestError.message : "请重试保存"}`);
+      return;
+    }
     try { localStorage.removeItem(`bitableBinding:${String(activeTask?._id || "")}`); } catch { /* 忽略 */ }
     setTaskCompleteVisible(true);
     setTimeout(() => { window.location.href = "/"; }, 1800);
@@ -1195,8 +1233,6 @@ export default function PublishWarehousePage() {
     try {
       await persist(activeTopicId, {
         cover: { selectedId: nextSelectedId, candidates: remaining, titleStyle: coverTitleStyle || null },
-        publishCopy: activeSelection?.publishCopy || null,
-        topicTags: activeSelection?.topicTags || null,
       });
       // 对话记录跟着清掉：候选都没了，留着那串调整记录只会让人以为还能接着改。
       setCoverChats(prev => {
@@ -1533,8 +1569,6 @@ export default function PublishWarehousePage() {
       ];
       await persist(activeTopicId, {
         cover: { selectedId: nextId, candidates: nextCandidates, titleStyle: coverTitleStyle || null },
-        publishCopy: activeSelection?.publishCopy || null,
-        topicTags: activeSelection?.topicTags || null,
       });
       // 记录搬到新版本上，继续改就是接着这一版改。
       setCoverChats(prev => ({
@@ -1571,6 +1605,7 @@ export default function PublishWarehousePage() {
     const style = coverTitleStyle;
     setError("");
     try {
+      await selectionDrafts.flush();
       const image = new Image();
       // dataUrl 不需要也不该设这个；外链则需要，否则画布会被污染。
       if (!src.startsWith("data:")) image.crossOrigin = "anonymous";
@@ -1694,10 +1729,25 @@ export default function PublishWarehousePage() {
               {topic.title || "（无标题）"}
             </button>
           ))}
-          {(savingTopicId || loadingSelections) && (
-            <span className="ml-auto text-xs text-slate-400">{savingTopicId ? "保存中…" : "读取上次进度…"}</span>
+          {(saveStatus.saving.length > 0 || loadingSelections) && (
+            <span role="status" className="ml-auto text-xs text-slate-400">{saveStatus.saving.length > 0 ? "保存中…" : "读取上次进度…"}</span>
           )}
         </div>
+
+        {(Object.keys(saveStatus.errors).length > 0 || saveStatus.cacheError) && (
+          <div role="alert" className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+            {Object.keys(saveStatus.errors).length > 0 && <span>
+              {`有 ${Object.keys(saveStatus.errors).length} 条选题的选择未保存，当前勾选已保留。${Object.values(saveStatus.errors)[0]}`}
+            </span>}
+            {saveStatus.cacheError && <span>{saveStatus.cacheError}</span>}
+            {Object.keys(saveStatus.errors).length > 0 && (
+              <Button variant="outline" className="h-8 text-xs" disabled={saveStatus.saving.length > 0}
+                onClick={() => { void selectionDrafts.flush().catch(() => { /* Retain retry notice. */ }); }}>
+                重试保存
+              </Button>
+            )}
+          </div>
+        )}
 
         {/* 三块主页签：分段控件，只留编号 + 名称（原来的灰字说明挪进各页自己的空态里）。 */}
         <div className={`mb-4 ${SEG_WRAP}`}>
@@ -2014,11 +2064,8 @@ export default function PublishWarehousePage() {
                               <button
                                 type="button"
                                 className="relative block w-full [container-type:inline-size]"
-                                onClick={() => persist(activeTopicId, {
-                                  cover: { selectedId: candidate.id, candidates: coverCandidates, titleStyle: coverTitleStyle || null },
-                                  publishCopy: activeSelection?.publishCopy || null,
-                                  topicTags: activeSelection?.topicTags || null,
-                                })}
+                                aria-pressed={isSelected}
+                                onClick={() => selectImmediately(activeTopicId, { cover: { selectedId: candidate.id } })}
                               >
                                 {src ? (
                                   <img src={src} alt={candidate.title} className="aspect-[3/4] w-full object-cover" />
@@ -2186,14 +2233,13 @@ export default function PublishWarehousePage() {
                             <button
                               key={option}
                               type="button"
-                              onClick={() => {
-                                const nextSelected = toggle(copySelected, option);
-                                persist(activeTopicId, {
-                                  cover: activeSelection?.cover || null,
-                                  publishCopy: { items: copyItems, selected: nextSelected },
-                                  topicTags: activeSelection?.topicTags || null,
-                                });
-                              }}
+                              aria-pressed={checked}
+                              onClick={() => selectImmediately(activeTopicId, current => ({
+                                publishCopy: {
+                                  items: current.publishCopy.items.length > 0 ? current.publishCopy.items : copyItems,
+                                  selected: toggle(current.publishCopy.selected, option),
+                                },
+                              }))}
                               className={`flex w-full items-start gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
                                 checked ? "border-blue-400 bg-blue-50 text-blue-800" : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
                               }`}
@@ -2310,11 +2356,14 @@ export default function PublishWarehousePage() {
                           <button
                             key={tag}
                             type="button"
-                            onClick={() => persist(activeTopicId, {
-                              cover: activeSelection?.cover || null,
-                              publishCopy: activeSelection?.publishCopy || null,
-                              topicTags: { groups: tagGroups, selected: toggle(tagSelected, tag), missing: activeSelection?.topicTags?.missing || [] },
-                            })}
+                            aria-pressed={checked}
+                            onClick={() => selectImmediately(activeTopicId, current => ({
+                              topicTags: {
+                                groups: current.topicTags.groups.length > 0 ? current.topicTags.groups : tagGroups,
+                                selected: toggle(current.topicTags.selected, tag),
+                                missing: current.topicTags.missing,
+                              },
+                            }))}
                             className={`rounded-lg border px-2.5 py-1 text-[11px] transition ${
                               checked ? CHIP_ON : CHIP_OFF
                             }`}

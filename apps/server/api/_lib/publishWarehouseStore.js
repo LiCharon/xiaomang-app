@@ -38,6 +38,8 @@ const COVER_BASES_COLLECTION = "publish_cover_bases";
 /** 一条选题最多留几个封面/文案候选（防止前端塞进来一个巨型数组）。 */
 const MAX_COVER_CANDIDATES = 12;
 const MAX_COPY_OPTIONS = 12;
+// 候选上限按每类计算；选择结果跨四类，不能共用单类的上限。
+const MAX_COPY_SELECTIONS = MAX_COPY_OPTIONS * 4;
 const MAX_TAGS = 20;
 /** 参考图/生成图的 data URL 可能很大 —— 只存 URL 或截断后的 data URL。 */
 /**
@@ -474,7 +476,7 @@ const normalizePublishCopy = value => {
   return {
     items,
     /** 勾选的结果：每一类选了哪几句。 */
-    selected: (Array.isArray(source.selected) ? source.selected : []).map(item => cleanText(item, 300)).filter(Boolean).slice(0, MAX_COPY_OPTIONS),
+    selected: (Array.isArray(source.selected) ? source.selected : []).map(item => cleanText(item, 300)).filter(Boolean).slice(0, MAX_COPY_SELECTIONS),
   };
 };
 
@@ -505,8 +507,8 @@ const serializeSelection = document => ({
   updatedAt: toIso(document.updatedAt),
 });
 
-/** 保存一条选题的发布仓选择（幂等 upsert，按 `{owner, customerId, topicId}` 唯一）。 */
-export async function savePublishSelection({ ownerId, customerId, topicId, title = "", cover = null, publishCopy = null, topicTags = null } = {}) {
+/** 保存提供的字段；省略的板块保留，显式 null 清空。封面只传 selectedId 时保留图片。 */
+export async function savePublishSelection({ ownerId, customerId, topicId, title, cover, publishCopy, topicTags } = {}) {
   const owner = requireOwner(ownerId);
   const target = requireCustomerId(customerId);
   const topic = asText(topicId);
@@ -517,17 +519,38 @@ export async function savePublishSelection({ ownerId, customerId, topicId, title
   await ensureSelectionIndexes(collection);
 
   const now = new Date();
+  const updates = { updatedAt: now };
+  const defaults = {
+    createdAt: now,
+    title: "",
+    cover: normalizeCover(null),
+    publishCopy: normalizePublishCopy(null),
+    topicTags: normalizeTags(null),
+  };
+  if (title !== undefined) {
+    updates.title = cleanText(title, 300);
+    delete defaults.title;
+  }
+  if (cover !== undefined) {
+    const selectionOnly = cover && typeof cover === "object"
+      && Object.keys(cover).length === 1 && Object.hasOwn(cover, "selectedId");
+    if (selectionOnly) updates["cover.selectedId"] = cleanText(cover.selectedId, 80);
+    else updates.cover = normalizeCover(cover);
+    delete defaults.cover;
+  }
+  if (publishCopy !== undefined) {
+    updates.publishCopy = normalizePublishCopy(publishCopy);
+    delete defaults.publishCopy;
+  }
+  if (topicTags !== undefined) {
+    updates.topicTags = normalizeTags(topicTags);
+    delete defaults.topicTags;
+  }
   await collection.updateOne(
     { managerId: owner, customerId: target, topicId: topic },
     {
-      $set: {
-        title: cleanText(title, 300),
-        cover: normalizeCover(cover),
-        publishCopy: normalizePublishCopy(publishCopy),
-        topicTags: normalizeTags(topicTags),
-        updatedAt: now,
-      },
-      $setOnInsert: { createdAt: now },
+      $set: updates,
+      $setOnInsert: defaults,
     },
     { upsert: true },
   );

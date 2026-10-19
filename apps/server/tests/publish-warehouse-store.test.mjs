@@ -179,6 +179,65 @@ test("发布仓 store", { skip }, async t => {
     assert.deepEqual(saved.topicTags.missing, ["脚本核心内容 0/2"]);
   });
 
+  await t.test("仅保存文案或封面勾选，不重传或清空其他板块", async () => {
+    const params = { ownerId: OWNER_A, customerId: CUSTOMER, topicId: "topic-1" };
+    const before = (await listPublishSelections(params)).find(item => item.topicId === params.topicId);
+    const saved = await savePublishSelection({
+      ...params,
+      publishCopy: { ...before.publishCopy, selected: ["金句二"] },
+    });
+    assert.equal(saved.title, before.title);
+    assert.deepEqual(saved.cover, before.cover);
+    assert.deepEqual(saved.topicTags, before.topicTags);
+    assert.deepEqual(saved.publishCopy.selected, ["金句二"]);
+
+    const selected = await savePublishSelection({ ...params, cover: { selectedId: "cover-1" } });
+    assert.equal(selected.cover.selectedId, "cover-1");
+    assert.deepEqual(selected.cover.candidates, before.cover.candidates);
+    assert.deepEqual(selected.cover.titleStyle, before.cover.titleStyle);
+    assert.deepEqual(selected.publishCopy, saved.publishCopy);
+    assert.deepEqual(selected.topicTags, before.topicTags);
+
+    // 两个板块同时保存也必须只改各自字段，不能用旧的整份文档回写。
+    await Promise.all([
+      savePublishSelection({ ...params, publishCopy: { ...before.publishCopy, selected: ["金句一"] } }),
+      savePublishSelection({ ...params, topicTags: { ...before.topicTags, selected: ["工伤"] } }),
+    ]);
+    const concurrent = (await listPublishSelections(params)).find(item => item.topicId === params.topicId);
+    assert.deepEqual(concurrent.publishCopy.selected, ["金句一"]);
+    assert.deepEqual(concurrent.topicTags.selected, ["工伤"]);
+    assert.equal(concurrent.cover.selectedId, "cover-1");
+  });
+
+  await t.test("四类各四条文案全部选中，保存和读回不截断", async () => {
+    const items = ["punchline", "title", "threeSeconds", "interaction"].map(kind => ({
+      kind, label: kind, source: "agent", options: [1, 2, 3, 4].map(index => `${kind}-${index}`),
+    }));
+    const selected = items.flatMap(item => item.options);
+    const saved = await savePublishSelection({
+      ownerId: OWNER_A, customerId: CUSTOMER, topicId: "topic-1", publishCopy: { items, selected },
+    });
+    assert.equal(selected.length, 16);
+    assert.deepEqual(saved.publishCopy.selected, selected);
+    const read = (await listPublishSelections({ ownerId: OWNER_A, customerId: CUSTOMER }))
+      .find(item => item.topicId === "topic-1");
+    assert.deepEqual(read.publishCopy.selected, selected);
+  });
+
+  await t.test("部分更新首次写入有默认值；显式 null 只清空指定板块", async () => {
+    const params = { ownerId: OWNER_A, customerId: CUSTOMER, topicId: "topic-minimal" };
+    const first = await savePublishSelection({ ...params, cover: { selectedId: "c1" } });
+    assert.equal(first.title, "");
+    assert.deepEqual(first.cover.candidates, []);
+    assert.deepEqual(first.publishCopy.selected, []);
+    assert.deepEqual(first.topicTags.selected, []);
+    await savePublishSelection({ ...params, topicTags: { selected: ["保留标签"] } });
+    const cleared = await savePublishSelection({ ...params, cover: null, publishCopy: null });
+    assert.equal(cleared.cover.selectedId, "");
+    assert.deepEqual(cleared.topicTags.selected, ["保留标签"]);
+    await deletePublishSelection(params);
+  });
+
   await t.test("选题选择：同 topicId 重复保存是 upsert；不同 topicId 各自一份", async () => {
     await savePublishSelection({
       ownerId: OWNER_A,
